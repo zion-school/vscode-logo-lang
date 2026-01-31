@@ -1,0 +1,12 @@
+.vscode/**
+.vscode-test
+*.vsix
+.DS_Store
+src/**
+tsconfig.json
+.eslintrc.js
+.gitignore
+**/*.map
+output/*.svg
+out/tests/**
+examples/**

@@ -1,0 +1,142 @@
+{
+  "name": "logo-lang",
+  "displayName": "Logo Language",
+  "description": "Logo Language Interpreter and Debugger",
+  "version": "0.5.0",
+  "publisher": "zion-school",
+  "icon": "images/logo-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zion-school/vscode-logo-lang.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onDebugResolve:logo",
+    "onLanguage:logo"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "logo",
+        "aliases": [
+          "Logo",
+          "Logo",
+          "logo"
+        ],
+        "extensions": [
+          ".logo"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./images/logo-file-icon.png",
+          "dark": "./images/logo-file-icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "logo",
+        "scopeName": "source.logo",
+        "path": "./syntaxes/logo.tmLanguage.json"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "logo"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "logo",
+        "label": "Logo Debug",
+        "program": "./out/debugAdapter.js",
+        "runtime": "node",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to a Logo file.",
+                "default": "${file}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Automatically stop after launch.",
+                "default": true
+              },
+              "trace": {
+                "type": "boolean",
+                "description": "Enable logging of the Debug Adapter Protocol.",
+                "default": true
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "logo",
+            "request": "launch",
+            "name": "Debug Logo Program",
+            "program": "${file}",
+            "stopOnEntry": true
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Logo Debug: Launch",
+            "description": "A new configuration for debugging a Logo program.",
+            "body": {
+              "type": "logo",
+              "request": "launch",
+              "name": "Debug Logo Program",
+              "program": "^\"\\${file}\"",
+              "stopOnEntry": true
+            }
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "logo.showGraphics",
+        "title": "Show Logo Graphics",
+        "category": "Logo"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test:gen-svg": "npm run compile && node out/tests/generateSVG.test.js",
+    "test:repeat": "npm run compile && node out/tests/repeatDebug.test.js",
+    "test:examples": "npm run compile && node out/tests/ExamplesDebug.test.js",
+    "test:diagnostics": "npm run compile && node out/tests/diagnostics.test.js",
+    "test:check-examples": "npm run compile && node out/tests/checkExamples.test.js",
+    "lint": "eslint src --ext ts",
+    "generate-svg": "npm run compile && node out/generateSVG.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.x",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.40.0",
+    "typescript": "^5.1.3"
+  },
+  "dependencies": {
+    "@vscode/debugadapter": "^1.61.0",
+    "@vscode/debugprotocol": "^1.61.0"
+  }
+}

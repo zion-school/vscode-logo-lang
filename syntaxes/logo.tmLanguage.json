@@ -1,0 +1,119 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Logo",
+  "patterns": [
+    {
+      "include": "#function-definition"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#variables"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#brackets"
+    }
+  ],
+  "repository": {
+    "function-definition": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(TO)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.logo"
+            },
+            "2": {
+              "name": "entity.name.function.definition.logo"
+            }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.logo",
+          "match": "(?i)\\b(END|IF|REPEAT|STOP|THEN|ELSE)\\b"
+        },
+        {
+          "name": "support.function.turtle.logo",
+          "match": "(?i)\\b(FD|FORWARD|BK|BACK|BACKWARD|RT|RIGHT|LT|LEFT|SETH|SETHEADING|SETXY|SETPOS)\\b"
+        },
+        {
+          "name": "support.function.pen.logo",
+          "match": "(?i)\\b(PU|PENUP|PD|PENDOWN|SETPENCOLOR|SETPC)\\b"
+        },
+        {
+          "name": "support.function.screen.logo",
+          "match": "(?i)\\b(CS|CLEARSCREEN|CLEAN|HT|HIDETURTLE|ST|SHOWTURTLE|HOME)\\b"
+        },
+        {
+          "name": "support.function.logic.logo",
+          "match": "(?i)\\b(AND|OR|NOT|TRUE|FALSE)\\b"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.logo",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.logo",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "comments": {
+      "name": "comment.line.semicolon.logo",
+      "match": ";.*$"
+    },
+    "numbers": {
+      "name": "constant.numeric.logo",
+      "match": "\\b-?[0-9]+(\\.[0-9]+)?\\b"
+    },
+    "variables": {
+      "name": "variable.parameter.logo",
+      "match": ":[A-Za-z_][A-Za-z0-9_]*"
+    },
+    "operators": {
+      "name": "keyword.operator.logo",
+      "match": "[+\\-*/=<>]|(?i)\\b(GREATER|LESS|GREATERP|LESSP|EQUALP)\\b"
+    },
+    "brackets": {
+      "patterns": [
+        {
+          "name": "punctuation.section.brackets.begin.logo",
+          "match": "\\["
+        },
+        {
+          "name": "punctuation.section.brackets.end.logo",
+          "match": "\\]"
+        },
+        {
+          "name": "punctuation.section.parens.begin.logo",
+          "match": "\\("
+        },
+        {
+          "name": "punctuation.section.parens.end.logo",
+          "match": "\\)"
+        }
+      ]
+    }
+  },
+  "scopeName": "source.logo"
+}

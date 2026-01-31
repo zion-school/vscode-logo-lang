@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logo Graphics</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            overflow: hidden;
+        }
+        canvas {
+            background-color: white;
+            cursor: default;
+            transform-origin: center center;
+        }
+        #context-menu {
+            position: absolute;
+            display: none;
+            background-color: #252526;
+            border: 1px solid #454545;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            z-index: 1000;
+            min-width: 120px;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .menu-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #cccccc;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .menu-item:hover {
+            background-color: #094771;
+        }
+        .menu-separator {
+            height: 1px;
+            background-color: #454545;
+            margin: 4px 0;
+        }
+        #zoom-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(37, 37, 38, 0.9);
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #cccccc;
+            display: none;
+            z-index: 100;
+        }
+        #info {
+            text-align: center;
+            margin-top: 4px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Turtle - Position: (0, 0) | Angle: 0°</div>
+    <div id="canvas-container">
+        <canvas id="canvas" width="500" height="500"></canvas>
+        <div id="zoom-indicator">100%</div>
+    </div>
+    
+    <!-- Context Menu -->
+    <div id="context-menu">
+        <div class="menu-item" id="save-menu">
+            <span>💾</span>
+            <span>Save as PNG</span>
+        </div>
+        <div class="menu-item" id="copy-menu">
+            <span>📋</span>
+            <span>Copy to Clipboard</span>
+        </div>
+        <div class="menu-separator"></div>
+        <div class="menu-item" id="grid-menu">
+            <span>🔲</span>
+            <span>Turn on Grid</span>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+        const contextMenu = document.getElementById('context-menu');
+        const zoomIndicator = document.getElementById('zoom-indicator');
+        const infoDisplay = document.getElementById('info');
+        
+        let currentCommands = [];
+        let zoomLevel = 1.0;
+        let zoomIndicatorTimeout = null;
+        let gridEnabled = false;
+        const baseCanvasSize = 500;
+        
+        // Distance measurement state
+        let measuring = false;
+        let measureStartPoint = null;
+        let measureEndPoint = null;
+        let showMeasurement = false;
+
+        // Initial drawing setup
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 2;
+
+        // Listen for messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.command === 'draw') {
+                currentCommands = message.commands;
+                redrawCanvas();
+            }
+        });
+
+        function clearCanvas() {
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            if (gridEnabled) {
+                drawGrid();
+            }
+        }
+
+        function redrawCanvas() {
+            // Clear canvas
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            // Draw grid if enabled
+            if (gridEnabled) {
+                drawGrid();
+            }
+
+            let turtleX = 0, turtleY = 0, turtleAngle = 0;
+            let turtleVisible = true;
+
+            // Draw all commands
+            currentCommands.forEach(cmd => {
+                if (cmd.type === 'line' && cmd.from && cmd.to) {
+                    ctx.strokeStyle = cmd.color || 'black';
+                    ctx.lineWidth = (cmd.width || 2) * zoomLevel;
+                    ctx.beginPath();
+                    ctx.moveTo(
+                        canvas.width / 2 + cmd.from.x * zoomLevel,
+                        canvas.height / 2 - cmd.from.y * zoomLevel
+                    );
+                    ctx.lineTo(
+                        canvas.width / 2 + cmd.to.x * zoomLevel,
+                        canvas.height / 2 - cmd.to.y * zoomLevel
+                    );
+                    ctx.stroke();
+                    // Update turtle position from last line drawn
+                    turtleX = cmd.to.x;
+                    turtleY = cmd.to.y;
+                    if (cmd.angle !== undefined) {
+                        turtleAngle = cmd.angle;
+                    }
+                } else if (cmd.type === 'move' && cmd.to) {
+                    // Update turtle position and angle from move commands
+                    turtleX = cmd.to.x;
+                    turtleY = cmd.to.y;
+                    if (cmd.angle !== undefined) {
+                        turtleAngle = cmd.angle;
+                    }
+                } else if (cmd.type === 'reset') {
+                    // Reset turtle position and clear screen
+                    clearCanvas();
+                    turtleX = 0;
+                    turtleY = 0;
+                    turtleAngle = 0;
+                    turtleVisible = true;
+                } else if (cmd.type === 'clean') {
+                    clearCanvas();
+                } else if (cmd.type === 'hideturtle') {
+                    turtleVisible = false;
+                } else if (cmd.type === 'showturtle') {
+                    turtleVisible = true;
+                }
+            });
+
+            // Draw the turtle arrow only if visible
+            if (turtleVisible) {
+                drawTurtle(turtleX, turtleY, turtleAngle);
+            }
+            
+            // Draw measurement if active
+            if (showMeasurement && measureStartPoint && measureEndPoint) {
+                drawMeasurement();
+            }
+            
+            // Update info display
+            updateInfo(turtleX, turtleY, turtleAngle);
+        }
+
+        function drawTurtle(x, y, angle) {
+            const centerX = canvas.width / 2 + x * zoomLevel;
+            const centerY = canvas.height / 2 - y * zoomLevel;
+            const scale = zoomLevel;
+            
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            ctx.rotate(angle * Math.PI / 180); // Direct angle rotation (0 = up)
+            
+            // Draw turtle with SVG-like polygon: points="0,-10 -5,5 0,0 5,5"
+            ctx.beginPath();
+            ctx.moveTo(0, -10 * scale);
+            ctx.lineTo(-5 * scale, 5 * scale);
+            ctx.lineTo(0, 0);
+            ctx.lineTo(5 * scale, 5 * scale);
+            ctx.closePath();
+            
+            ctx.fillStyle = 'green';
+            ctx.fill();
+            ctx.strokeStyle = 'darkgreen';
+            ctx.lineWidth = 1 * scale;
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+
+        function updateInfo(x, y, angle) {
+            // Round values for cleaner display
+            const roundedX = Math.round(x * 10) / 10;
+            const roundedY = Math.round(y * 10) / 10;
+            const roundedAngle = Math.round(angle * 10) / 10;
+            // Always show angle as positive between 0 and 360
+            const displayAngle = ((roundedAngle % 360) + 360) % 360
+            infoDisplay.textContent = `Turtle Position: (${roundedX}, ${roundedY}) | Angle: ${displayAngle}°`;
+        }
+
+        function drawMeasurement() {
+            ctx.save();
+            
+            // Draw measurement line
+            ctx.strokeStyle = 'darkgreen';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(measureStartPoint.x, measureStartPoint.y);
+            ctx.lineTo(measureEndPoint.x, measureEndPoint.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // Calculate distance in Logo coordinates
+            const dx = (measureEndPoint.x - canvas.width / 2) / zoomLevel - (measureStartPoint.x - canvas.width / 2) / zoomLevel;
+            const dy = (canvas.height / 2 - measureEndPoint.y) / zoomLevel - (canvas.height / 2 - measureStartPoint.y) / zoomLevel;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            // Draw distance label
+            const midX = (measureStartPoint.x + measureEndPoint.x) / 2;
+            const midY = (measureStartPoint.y + measureEndPoint.y) / 2;
+            
+            ctx.font = '14px Arial';
+            const text = `${Math.round(distance * 10) / 10}`;
+            const metrics = ctx.measureText(text);
+            const padding = 4;
+            
+            // Background for text
+            ctx.fillStyle = 'darkgreen';
+            ctx.fillRect(
+                midX - metrics.width / 2 - padding,
+                midY - 20,
+                metrics.width + padding * 2,
+                20
+            );
+            
+            // Text
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, midX, midY - 10);
+            
+            ctx.restore();
+        }
+
+        function drawGrid() {
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const gridSpacing = 10 * zoomLevel; // Scale grid spacing with zoom
+            
+            ctx.save();
+            ctx.strokeStyle = '#e0e0e0';
+            ctx.lineWidth = 0.5 * zoomLevel;
+            
+            // Draw vertical grid lines (parallel to Y-axis)
+            for (let x = 0; x <= canvas.width; x += gridSpacing) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            
+            // Draw horizontal grid lines (parallel to X-axis)
+            for (let y = 0; y <= canvas.height; y += gridSpacing) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+            
+            // Draw X and Y axes (bolder)
+            ctx.strokeStyle = '#a0a0a0';
+            ctx.lineWidth = 1.5 * zoomLevel;
+            
+            // Y-axis (vertical line through center)
+            ctx.beginPath();
+            ctx.moveTo(centerX, 0);
+            ctx.lineTo(centerX, canvas.height);
+            ctx.stroke();
+            
+            // X-axis (horizontal line through center)
+            ctx.beginPath();
+            ctx.moveTo(0, centerY);
+            ctx.lineTo(canvas.width, centerY);
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+
+        // Zoom functionality with Ctrl + Mouse Wheel
+        container.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                
+                const delta = -Math.sign(e.deltaY) * 0.1;
+                const newZoom = Math.min(Math.max(0.1, zoomLevel + delta), 5.0);
+                
+                if (newZoom !== zoomLevel) {
+                    zoomLevel = newZoom;
+                    applyZoom();
+                    showZoomIndicator();
+                }
+            }
+        }, { passive: false });
+
+        function applyZoom() {
+            // Scale the canvas resolution to maintain crisp rendering
+            const scaledSize = baseCanvasSize * zoomLevel;
+            canvas.width = scaledSize;
+            canvas.height = scaledSize;
+            
+            // Scale the canvas display size
+            canvas.style.width = scaledSize + 'px';
+            canvas.style.height = scaledSize + 'px';
+            
+            // Redraw at the new resolution
+            redrawCanvas();
+        }
+
+        function showZoomIndicator() {
+            zoomIndicator.textContent = `${Math.round(zoomLevel * 100)}%`;
+            zoomIndicator.style.display = 'block';
+            
+            if (zoomIndicatorTimeout) {
+                clearTimeout(zoomIndicatorTimeout);
+            }
+            
+            zoomIndicatorTimeout = setTimeout(() => {
+                zoomIndicator.style.display = 'none';
+            }, 1500);
+        }
+
+        // Context Menu functionality
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            
+            contextMenu.style.left = e.pageX + 'px';
+            contextMenu.style.top = e.pageY + 'px';
+            contextMenu.style.display = 'block';
+        });
+
+        // Hide context menu when clicking elsewhere
+        document.addEventListener('click', (e) => {
+            if (!contextMenu.contains(e.target)) {
+                contextMenu.style.display = 'none';
+            }
+        });
+
+        // Save as PNG
+        document.getElementById('save-menu').addEventListener('click', () => {
+            const dataURL = canvas.toDataURL('image/png');
+            const link = document.createElement('a');
+            link.download = `logo-graphics-${Date.now()}.png`;
+            link.href = dataURL;
+            link.click();
+            contextMenu.style.display = 'none';
+        });
+
+        // Copy to Clipboard
+        document.getElementById('copy-menu').addEventListener('click', async () => {
+            try {
+                canvas.toBlob(async (blob) => {
+                    if (blob) {
+                        try {
+                            await navigator.clipboard.write([
+                                new ClipboardItem({ 'image/png': blob })
+                            ]);
+                            // Visual feedback
+                            const originalText = document.getElementById('copy-menu').innerHTML;
+                            document.getElementById('copy-menu').innerHTML = '<span>✓</span><span>Copied!</span>';
+                            setTimeout(() => {
+                                document.getElementById('copy-menu').innerHTML = originalText;
+                            }, 1000);
+                        } catch (err) {
+                            console.error('Failed to copy to clipboard:', err);
+                            alert('Failed to copy to clipboard. Make sure clipboard permissions are granted.');
+                        }
+                    }
+                });
+            } catch (err) {
+                console.error('Failed to create blob:', err);
+            }
+            contextMenu.style.display = 'none';
+        });
+
+        // Toggle Grid
+        document.getElementById('grid-menu').addEventListener('click', () => {
+            gridEnabled = !gridEnabled;
+            const gridMenuItem = document.getElementById('grid-menu');
+            if (gridEnabled) {
+                gridMenuItem.innerHTML = '<span>🔲</span><span>Turn off Grid</span>';
+            } else {
+                gridMenuItem.innerHTML = '<span>🔲</span><span>Turn on Grid</span>';
+            }
+            redrawCanvas();
+            contextMenu.style.display = 'none';
+        });
+
+        // Distance measurement mouse events
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0) { // Left click
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                
+                if (showMeasurement) {
+                    // Clear existing measurement
+                    showMeasurement = false;
+                    measureStartPoint = null;
+                    measureEndPoint = null;
+                    redrawCanvas();
+                } else {
+                    // Start new measurement
+                    measuring = true;
+                    measureStartPoint = { x, y };
+                    measureEndPoint = { x, y };
+                }
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (measuring) {
+                const rect = canvas.getBoundingClientRect();
+                measureEndPoint = {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+                redrawCanvas();
+            }
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (e.button === 0 && measuring) {
+                measuring = false;
+                const rect = canvas.getBoundingClientRect();
+                measureEndPoint = {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+                showMeasurement = true;
+                redrawCanvas();
+            }
+        });
+
+        // Handle mouse leaving canvas
+        canvas.addEventListener('mouseleave', () => {
+            if (measuring) {
+                measuring = false;
+                showMeasurement = false;
+                measureStartPoint = null;
+                measureEndPoint = null;
+                redrawCanvas();
+            }
+        });
+    </script>
+</body>
+</html>
