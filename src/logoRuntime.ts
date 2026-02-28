@@ -1163,6 +1163,51 @@ export class LogoRuntime {
     this.turtle.y = newY;
   }
 
+  private arc(angle: number, radius: number): void {
+    if (angle === 0 || radius === 0) {
+      return;
+    }
+
+    const segments = Math.max(1, Math.ceil(Math.abs(angle) / 5));
+    const stepAngle = angle / segments;
+
+    const deg2rad = Math.PI / 180
+    for (let i = 0; i < segments; i++) {
+      const startX = this.turtle.x;
+      const startY = this.turtle.y;
+      const startHeading = this.turtle.angle;
+
+      const headingRadians = startHeading * deg2rad;
+      const centerX = startX + radius * Math.cos(headingRadians);
+      const centerY = startY - radius * Math.sin(headingRadians);
+
+      const endHeading = startHeading + stepAngle;
+      const endHeadingRadians = endHeading * deg2rad;
+      const newX = centerX - radius * Math.cos(endHeadingRadians);
+      const newY = centerY + radius * Math.sin(endHeadingRadians);
+
+      if (this.turtle.penDown) {
+        this.drawCommands.push({
+          type: 'line',
+          from: { x: startX, y: startY },
+          to: { x: newX, y: newY },
+          color: this.turtle.penColor,
+          angle: endHeading
+        });
+      } else {
+        this.drawCommands.push({
+          type: 'move',
+          to: { x: newX, y: newY },
+          angle: endHeading
+        });
+      }
+
+      this.turtle.x = newX;
+      this.turtle.y = newY;
+      this.turtle.angle = endHeading;
+    }
+  }
+
   private numberToColor(num: number): string {
     const colors = [
       '#000000', '#FF0000', '#00FF00', '#0000FF',
