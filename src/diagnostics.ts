@@ -20,34 +20,62 @@ export function analyzeSource(source: string): DiagnosticItem[] {
   }
 
   // ----- String literal check (no multi-line strings supported) -----
+  // In Logo, `"name` is a quoted word token (not an unterminated string).
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     // Find comment start
     const commentIndex = line.indexOf(';');
     const codePart = commentIndex === -1 ? line : line.substring(0, commentIndex);
 
-    // Check unclosed quote count in this line
-    const quoteCount = (codePart.match(/"/g) || []).length;
-    if (quoteCount % 2 === 1) {
-      const idx = codePart.indexOf('"');
-      push(i, idx >= 0 ? idx : 0, 1, 'error', 'Unterminated string literal');
+    let col = 0;
+    while (col < codePart.length) {
+      if (codePart[col] !== '"') {
+        col++;
+        continue;
+      }
+
+      // Quoted word token: "name
+      if (col + 1 < codePart.length && /[A-Za-z_]/.test(codePart[col + 1])) {
+        let j = col + 2;
+        while (j < codePart.length && /[A-Za-z0-9_]/.test(codePart[j])) {
+          j++;
+        }
+        col = j;
+        continue;
+      }
+
+      // Regular quoted string must close on the same line.
+      const close = codePart.indexOf('"', col + 1);
+      if (close === -1) {
+        push(i, col, 1, 'error', 'Unterminated string literal');
+        break;
+      }
+      col = close + 1;
     }
   }
 
   // ----- Brackets and parentheses (file-wide) -----
   type Bracket = { ch: string; line: number; col: number };
   const stack: Bracket[] = [];
-  let inString = false;
-
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
     // ignore comments
     const commentIndex = line.indexOf(';');
     const codePart = commentIndex === -1 ? line : line.substring(0, commentIndex);
+    let inString = false;
 
     for (let ci = 0; ci < codePart.length; ci++) {
       const ch = codePart[ci];
       if (ch === '"') {
+        // Skip Logo quoted words like "name (do not toggle string mode)
+        if (ci + 1 < codePart.length && /[A-Za-z_]/.test(codePart[ci + 1])) {
+          ci++;
+          while (ci < codePart.length && /[A-Za-z0-9_]/.test(codePart[ci])) {
+            ci++;
+          }
+          ci--; // compensate for the loop increment
+          continue;
+        }
         inString = !inString;
         continue;
       }
