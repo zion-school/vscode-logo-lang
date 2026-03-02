@@ -214,6 +214,15 @@ export function analyzeSource(source: string): DiagnosticItem[] {
         }
       }
 
+      if (up === 'MAKE') {
+        const arg2 = parts.length > 2 ? parts[2] : null;
+        if (!arg || !arg2) {
+          push(li, tokenStart, token.length, 'error', `${token.toUpperCase()} expects 2 arguments`);
+        } else if (!/^"[A-Za-z_][A-Za-z0-9_]*"?$/.test(arg)) {
+          push(li, tokenStart, token.length, 'error', `${token.toUpperCase()} expects first argument to be a quoted variable name`);
+        }
+      }
+
       // Unsupported command warning (only if not a supported command or known proc)
       if (!supported.has(up) && !procNames.has(up) && up !== 'TO' && up !== 'END') {
         push(li, tokenStart, token.length, 'warning', `Unsupported command '${token}'`);
