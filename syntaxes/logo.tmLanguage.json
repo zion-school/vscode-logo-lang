@@ -9,6 +9,9 @@
       "include": "#keywords"
     },
     {
+      "include": "#quoted-words"
+    },
+    {
       "include": "#strings"
     },
     {
@@ -67,9 +70,13 @@
         }
       ]
     },
+    "quoted-words": {
+      "name": "variable.other.quoted-word.logo",
+      "match": "\"[A-Za-z_][A-Za-z0-9_]*(?![^\"\\n]*\")"
+    },
     "strings": {
       "name": "string.quoted.double.logo",
-      "begin": "\"",
+      "begin": "\"(?![A-Za-z_][A-Za-z0-9_]*\")",
       "end": "\"",
       "patterns": [
         {

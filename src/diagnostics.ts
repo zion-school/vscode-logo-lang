@@ -40,17 +40,29 @@ export function analyzeSource(source: string): DiagnosticItem[] {
         while (j < codePart.length && /[A-Za-z0-9_]/.test(codePart[j])) {
           j++;
         }
+
+        // Invalid in this Logo dialect: "name"
+        if (j < codePart.length && codePart[j] === '"') {
+          push(i, j, 1, 'error', 'Closing quote is not allowed for Logo word literals (use "name)');
+          col = j + 1;
+          continue;
+        }
+
+        // Valid Logo word literal without closing quote: "name
         col = j;
         continue;
       }
 
-      // Regular quoted string must close on the same line.
+      // Closed string literal: "..."
       const close = codePart.indexOf('"', col + 1);
-      if (close === -1) {
-        push(i, col, 1, 'error', 'Unterminated string literal');
-        break;
+      if (close !== -1) {
+        col = close + 1;
+        continue;
       }
-      col = close + 1;
+
+      // Regular quoted string must close on the same line.
+      push(i, col, 1, 'error', 'Unterminated string literal');
+      break;
     }
   }
 
@@ -67,6 +79,13 @@ export function analyzeSource(source: string): DiagnosticItem[] {
     for (let ci = 0; ci < codePart.length; ci++) {
       const ch = codePart[ci];
       if (ch === '"') {
+        // Closed string literal: skip to closing quote.
+        const close = codePart.indexOf('"', ci + 1);
+        if (close !== -1) {
+          ci = close;
+          continue;
+        }
+
         // Skip Logo quoted words like "name (do not toggle string mode)
         if (ci + 1 < codePart.length && /[A-Za-z_]/.test(codePart[ci + 1])) {
           ci++;
@@ -246,7 +265,7 @@ export function analyzeSource(source: string): DiagnosticItem[] {
         const arg2 = parts.length > 2 ? parts[2] : null;
         if (!arg || !arg2) {
           push(li, tokenStart, token.length, 'error', `${token.toUpperCase()} expects 2 arguments`);
-        } else if (!/^"[A-Za-z_][A-Za-z0-9_]*"?$/.test(arg)) {
+        } else if (!/^"[A-Za-z_][A-Za-z0-9_]*$/.test(arg)) {
           push(li, tokenStart, token.length, 'error', `${token.toUpperCase()} expects first argument to be a quoted variable name`);
         }
       }
