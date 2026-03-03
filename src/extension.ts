@@ -7,6 +7,8 @@ import { LogoCompletionProvider } from './completionProvider';
 import { analyzeSource } from './diagnostics';
 
 let graphicsPanel: vscode.WebviewPanel | undefined;
+let previewPanel: vscode.WebviewPanel | undefined;
+let previewSourceUri: vscode.Uri | undefined;
 let diagnosticsCollection: vscode.DiagnosticCollection | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -78,6 +80,29 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(runFileCommand);
+
+  // Register command to show preview (like Markdown preview)
+  const showPreviewCommand = vscode.commands.registerCommand(
+    'logo.showPreview',
+    () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'logo') {
+        vscode.window.showErrorMessage('Open a .logo file to preview.');
+        return;
+      }
+      showPreviewPanel(context, editor.document);
+    }
+  );
+  context.subscriptions.push(showPreviewCommand);
+
+  // Auto-update preview on save
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      if (doc.languageId === 'logo' && previewPanel && previewSourceUri && doc.uri.toString() === previewSourceUri.toString()) {
+        runPreview(doc);
+      }
+    })
+  );
 
   // Listen for debug session custom events
   vscode.debug.onDidReceiveDebugSessionCustomEvent((event) => {
@@ -179,9 +204,69 @@ function getWebviewContent(context: vscode.ExtensionContext): string {
   return html;
 }
 
+function showPreviewPanel(context: vscode.ExtensionContext, document: vscode.TextDocument) {
+  previewSourceUri = document.uri;
+
+  if (previewPanel) {
+    previewPanel.reveal(vscode.ViewColumn.Two);
+  } else {
+    previewPanel = vscode.window.createWebviewPanel(
+      'logoPreview',
+      'Preview: ' + path.basename(document.fileName),
+      vscode.ViewColumn.Two,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true
+      }
+    );
+
+    previewPanel.webview.html = getWebviewContent(context);
+
+    previewPanel.onDidDispose(() => {
+      previewPanel = undefined;
+      previewSourceUri = undefined;
+    });
+  }
+
+  // Update title when source changes
+  previewPanel.title = 'Preview: ' + path.basename(document.fileName);
+
+  // Run the program immediately
+  runPreview(document);
+}
+
+function runPreview(document: vscode.TextDocument) {
+  const source = document.getText();
+  const runtime = new LogoRuntime();
+  runtime.loadProgram(source);
+  // Run without breakpoints/stepping
+  runtime.setStepMode('continue');
+  runtime.execute().then(() => {
+    const commands = runtime.getDrawCommands();
+    if (previewPanel) {
+      previewPanel.webview.postMessage({
+        command: 'draw',
+        commands: commands
+      });
+    }
+  }).catch((err) => {
+    // Silently ignore runtime errors in preview
+    const commands = runtime.getDrawCommands();
+    if (previewPanel) {
+      previewPanel.webview.postMessage({
+        command: 'draw',
+        commands: commands
+      });
+    }
+  });
+}
+
 export function deactivate() {
   if (graphicsPanel) {
     graphicsPanel.dispose();
+  }
+  if (previewPanel) {
+    previewPanel.dispose();
   }
   if (diagnosticsCollection) {
     diagnosticsCollection.clear();

@@ -10,3 +10,4 @@ tsconfig.json
 output/*.svg
 out/tests/**
 examples/**
+*.sh

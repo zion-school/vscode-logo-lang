@@ -6,6 +6,8 @@ Standalone VSCode extension with interpreter and debugger for the Logo programmi
 
 - **Logo Language Support**: Implements the Logo interpreter directly in the extension
 - **Code Suggestions**: Auto-completion for Logo commands and procedures
+- **Live Preview**: Preview panel renders Logo graphics in real-time as you save your code.
+- **Save images**: Right-click on the preview panel & select "Save as PNG".
 - **Debugging**: Set breakpoints, step through code, inspect variables
 - **Syntax Highlighting**: Logo language syntax highlighting
 - **Syntax Checking**: Basic syntax error detection
@@ -18,13 +20,17 @@ Standalone VSCode extension with interpreter and debugger for the Logo programmi
 - `BK` / `BACK` / `BACKWARD` - Move backward
 - `RT` / `RIGHT` - Turn right
 - `LT` / `LEFT` - Turn left
-- `ARC` - Move along an arc
 - `PU` / `PENUP` - Lift pen
 - `PD` / `PENDOWN` - Put pen down
 
 ### Drawing
 - `CS` / `CLEARSCREEN` - Clear screen and reset turtle
+- `CLEAR` - Clear the drawing without resetting turtle position
 - `SETPENCOLOR` / `SETPC` - Set pen color
+- `HIDETURTLE` / `HT` - Hide turtle cursor
+- `SHOWTURTLE` / `ST` - Show turtle cursor
+- `PU` / `PENUP` - Lift pen
+- `PD` / `PENDOWN` - Put pen down
 
 ### Control Structures
 - `REPEAT n [commands]` - Repeat commands n times
@@ -37,11 +43,22 @@ Standalone VSCode extension with interpreter and debugger for the Logo programmi
 - Arithmetic operators: `+`, `-`, `*`, `/`
 - Comparison operators: `=`, `<`, `>`
 
+## Additional Commands
+- `ARC` - Move along an arc
+
 ## Usage
+
+### Preview
+1. Open a `.logo` file in VSCode
+2. Press **Ctrl+Shift+V** or click the **preview** icon in the editor title bar
+3. The preview panel will open, displaying the Logo graphics.
+4. The preview automatically updates whenever you save the file.
+
+### Debugging
 
 1. Open a `.logo` file in VSCode
 2. Press F5 or select "Debug Logo Program" from the debug menu
-3. The SVG graphics window will open automatically
+3. The graphics window will open automatically
 4. Use standard debugging controls:
    - F10: Step over
    - F11: Step into
@@ -49,3 +66,6 @@ Standalone VSCode extension with interpreter and debugger for the Logo programmi
    - F5: Continue
    - Shift+F5: Stop
 
+## Examples
+
+You can find example programs [here](https://github.com/zion-school/Logo-programs)

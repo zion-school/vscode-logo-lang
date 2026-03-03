@@ -2,7 +2,7 @@
   "name": "logo-lang",
   "displayName": "Logo Language",
   "description": "Logo Language Interpreter and Debugger",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "zion-school",
   "icon": "images/logo-icon.png",
   "repository": {
@@ -117,6 +117,12 @@
         "title": "Run Logo Program",
         "category": "Logo",
         "icon": "$(play)"
+      },
+      {
+        "command": "logo.showPreview",
+        "title": "Preview Logo Graphics",
+        "category": "Logo",
+        "icon": "$(open-preview)"
       }
     ],
     "menus": {
@@ -125,9 +131,21 @@
           "command": "logo.runFile",
           "group": "navigation",
           "when": "resourceLangId == logo"
+        },
+        {
+          "command": "logo.showPreview",
+          "when": "resourceLangId == logo",
+          "group": "navigation"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "logo.showPreview",
+        "key": "ctrl+shift+v",
+        "when": "editorLangId == logo"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
