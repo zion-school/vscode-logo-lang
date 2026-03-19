@@ -31,7 +31,8 @@
           "logo"
         ],
         "extensions": [
-          ".logo"
+          ".logo",
+          ".lgo"
         ],
         "configuration": "./language-configuration.json",
         "icon": {
