@@ -68,7 +68,8 @@ export class LogoDebugSession extends DebugSession {
     try {
       const source = fs.readFileSync(args.program, 'utf-8');
       this.sourceLines = source.split('\n');
-      this.runtime.loadProgram(source);
+      this.runtime.setDebugMode(true);
+      this.runtime.loadProgram(source, args.program);
 
       // Set up callback for PRINT output – send as custom event so
       // the extension can route it to the dedicated LOGO terminal.
@@ -213,7 +214,7 @@ export class LogoDebugSession extends DebugSession {
       vars.forEach((value, name) => {
         variables.push({
           name: name,
-          type: 'number',
+          type: typeof value,
           value: String(value),
           variablesReference: 0
         });
