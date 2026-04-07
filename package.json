@@ -158,6 +158,7 @@
     "test:examples": "npm run compile && node out/tests/ExamplesDebug.test.js",
     "test:diagnostics": "npm run compile && node out/tests/diagnostics.test.js",
     "test:check-examples": "npm run compile && node out/tests/checkExamples.test.js",
+    "test:procedure-debug": "npm run compile && node out/tests/procedureDebug.test.js",
     "lint": "eslint src --ext ts",
     "generate-svg": "npm run compile && node out/generateSVG.js"
   },
