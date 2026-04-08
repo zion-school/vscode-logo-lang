@@ -1579,6 +1579,15 @@ export class LogoRuntime {
       };
     }
 
+    if (token.value.toUpperCase() === 'REMAINDER') {
+      const dividend = await this.parsePrimary(tokens, startIndex + 1);
+      const divisor = await this.parsePrimary(tokens, dividend.nextIndex);
+      return {
+        value: this.computeRemainder(this.asNumber(dividend.value), this.asNumber(divisor.value)),
+        nextIndex: divisor.nextIndex
+      };
+    }
+
     // Parenthesized expression
     if (token.value === '(') {
       const expr = await this.parseExpression(tokens, startIndex + 1);
@@ -1639,6 +1648,14 @@ export class LogoRuntime {
 
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private computeRemainder(dividend: number, divisor: number): number {
+    if (divisor === 0) {
+      return 0;
+    }
+
+    return dividend - Math.trunc(dividend / divisor) * divisor;
   }
 
   private resolveLoadTarget(tokens: LogoToken[], startIndex: number): string {
