@@ -1563,6 +1563,14 @@ export class LogoRuntime {
       };
     }
 
+    if (token.value.toUpperCase() === 'INT') {
+      const operand = await this.parsePrimary(tokens, startIndex + 1);
+      return {
+        value: Math.trunc(this.asNumber(operand.value)),
+        nextIndex: operand.nextIndex
+      };
+    }
+
     // Parenthesized expression
     if (token.value === '(') {
       const expr = await this.parseExpression(tokens, startIndex + 1);

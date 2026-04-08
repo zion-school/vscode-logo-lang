@@ -283,7 +283,7 @@ export function analyzeSource(source: string, currentFilePath?: string): Diagnos
   const supported = new Set<string>([
     'FD','FORWARD','BK','BACK','BACKWARD','RT','RIGHT','LT','LEFT','ARC','SETH','SETHEADING',
     'PU','PENUP','PD','PENDOWN','CS','CLEARSCREEN','CLEAN','HOME','SETPOS','HT','HIDETURTLE','ST','SHOWTURTLE','SETPENCOLOR','SETPC',
-    'REPEAT','IF','IFELSE','STOP','MAKE','RANDOM','LOAD',
+    'REPEAT','IF','IFELSE','STOP','MAKE','RANDOM','INT','LOAD',
     'PRINT','PR'
   ]);
 
@@ -421,6 +421,12 @@ export function analyzeSource(source: string, currentFilePath?: string): Diagnos
       }
 
       if (up === 'RANDOM') {
+        if (!arg) {
+          push(li, tokenStart, token.length, 'error', `${token.toUpperCase()} expects 1 argument`);
+        }
+      }
+
+      if (up === 'INT') {
         if (!arg) {
           push(li, tokenStart, token.length, 'error', `${token.toUpperCase()} expects 1 argument`);
         }
