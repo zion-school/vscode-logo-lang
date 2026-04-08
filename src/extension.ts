@@ -39,7 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   function updateDiagnosticsForDocument(doc: vscode.TextDocument) {
     if (doc.languageId !== 'logo') return;
-    const items = analyzeSource(doc.getText());
+    const items = analyzeSource(doc.getText(), doc.uri.fsPath);
     const diagnostics: vscode.Diagnostic[] = items.map(it => {
       const range = new vscode.Range(it.line, it.startChar, it.line, it.startChar + it.length);
       const severity = it.severity === 'error' ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning;
@@ -78,7 +78,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       try {
         const runtime = new LogoRuntime();
-        runtime.loadProgram(document.getText());
+        runtime.loadProgram(document.getText(), document.fileName);
 
         // Route PRINT output to the LOGO output channel
         const outputChannel = getLogoOutputChannel();
@@ -263,7 +263,7 @@ function showPreviewPanel(context: vscode.ExtensionContext, document: vscode.Tex
 function runPreview(document: vscode.TextDocument) {
   const source = document.getText();
   const runtime = new LogoRuntime();
-  runtime.loadProgram(source);
+  runtime.loadProgram(source, document.fileName);
   // Run without breakpoints/stepping
   runtime.setStepMode('continue');
   runtime.execute().then(() => {
