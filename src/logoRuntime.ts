@@ -83,7 +83,7 @@ export class LogoRuntime {
   private currentLine: number = 0;
   private currentSourcePath: string = LogoRuntime.MEMORY_SOURCE_PATH;
   private stopExecution: boolean = false;
-  private breakpoints: Set<number> = new Set();
+  private breakpoints: Map<string, Set<number>> = new Map();
   private stepMode: StepMode = null;
   private stepStartCallStackDepth: number = 0;
   private executionHistory: ExecutionState[] = [];
@@ -99,6 +99,8 @@ export class LogoRuntime {
   private debugMode: boolean = false;
   private opaqueExecutionDepth: number = 0;
   private activeLoadStack: string[] = [];
+  private pendingPauseReason: 'step' | 'breakpoint' = 'step';
+  private lastPauseReason: 'step' | 'breakpoint' = 'step';
 
   constructor() {}
 
@@ -111,6 +113,7 @@ export class LogoRuntime {
     this.drawCommands = [];
     this.executionHistory = [];
     this.activeLoadStack = [];
+    this.breakpoints.clear();
     this.currentLine = 0;
     this.currentSourcePath = this.rootSourcePath;
     this.lastSteppedLine = -1;
@@ -163,8 +166,17 @@ export class LogoRuntime {
     return new Map(this.variables);
   }
 
-  public setBreakpoints(lines: number[]): void {
-    this.breakpoints = new Set(lines);
+  public setBreakpoints(lines: number[], sourcePath?: string): void {
+    const normalizedSourcePath = this.normalizeSourcePath(sourcePath ?? this.rootSourcePath);
+    this.breakpoints.set(normalizedSourcePath, new Set(lines));
+  }
+
+  public setSourceBreakpoints(breakpointsBySource: Map<string, number[]>): void {
+    this.breakpoints.clear();
+    breakpointsBySource.forEach((lines, sourcePath) => {
+      const normalizedSourcePath = this.normalizeSourcePath(sourcePath);
+      this.breakpoints.set(normalizedSourcePath, new Set(lines));
+    });
   }
 
   public setStepMode(mode: StepMode): void {
@@ -175,6 +187,10 @@ export class LogoRuntime {
 
   public setStepCallback(callback: () => void): void {
     this.onStepCallback = callback;
+  }
+
+  public getLastPauseReason(): 'step' | 'breakpoint' {
+    return this.lastPauseReason;
   }
 
   public setPrintCallback(callback: (message: string) => void): void {
@@ -247,13 +263,20 @@ export class LogoRuntime {
     return this.debugMode && this.opaqueExecutionDepth > 0;
   }
 
+  private hasBreakpointAtLine(sourcePath: string, line: number): boolean {
+    const lines = this.breakpoints.get(this.normalizeSourcePath(sourcePath));
+    return lines?.has(line) ?? false;
+  }
+
   private setCurrentLocation(line: number, sourcePath: string): void {
     this.currentLine = line;
     this.currentSourcePath = sourcePath;
   }
 
-  private shouldTrackVisibleDebugState(_sourcePath: string): boolean {
-    return !this.debugMode || !this.isOpaqueDebugExecution();
+  private shouldTrackVisibleDebugState(sourcePath: string): boolean {
+    return !this.debugMode ||
+      !this.isOpaqueDebugExecution() ||
+      this.hasBreakpointAtLine(sourcePath, this.currentLine);
   }
 
   private saveExecutionStateIfVisible(sourcePath: string): void {
@@ -263,18 +286,25 @@ export class LogoRuntime {
   }
 
   private shouldPauseAtLine(sourcePath: string): boolean {
+    const isNewLocation = this.currentLine !== this.lastSteppedLine ||
+      sourcePath !== this.lastSteppedSourcePath;
+    const shouldPauseForBreakpoint = this.hasBreakpointAtLine(sourcePath, this.currentLine) &&
+      isNewLocation;
+    if (shouldPauseForBreakpoint) {
+      this.pendingPauseReason = 'breakpoint';
+      return true;
+    }
+
     if (!this.shouldTrackVisibleDebugState(sourcePath)) {
       return false;
     }
 
-    const isNewLocation = this.currentLine !== this.lastSteppedLine ||
-      sourcePath !== this.lastSteppedSourcePath;
-    const shouldPauseForBreakpoint = sourcePath === this.rootSourcePath &&
-      this.breakpoints.has(this.currentLine) &&
-      isNewLocation;
     const shouldPauseForStepMode = isNewLocation &&
       this.shouldPauseForStepMode();
-    return shouldPauseForBreakpoint || shouldPauseForStepMode;
+    if (shouldPauseForStepMode) {
+      this.pendingPauseReason = 'step';
+    }
+    return shouldPauseForStepMode;
   }
 
   private async runOpaqueIfNeeded<T>(opaque: boolean, fn: () => Promise<T>): Promise<T> {
@@ -324,6 +354,8 @@ export class LogoRuntime {
     this.stepMode = null;
     this.lastSteppedLine = this.currentLine; // Remember where we paused
     this.lastSteppedSourcePath = this.currentSourcePath;
+    this.lastPauseReason = this.pendingPauseReason;
+    this.pendingPauseReason = 'step';
     if (this.onStepCallback) {
       this.onStepCallback();
     }
