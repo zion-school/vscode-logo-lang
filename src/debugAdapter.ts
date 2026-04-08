@@ -63,12 +63,14 @@ export class LogoDebugSession extends DebugSession {
     args: LaunchRequestArguments
   ): Promise<void> {
     this.stopOnEntry = args.stopOnEntry || false;
-    this.currentSourceFile = args.program;
+    this.currentSourceFile = this.normalizeSourcePath(args.program);
 
     try {
-      const source = fs.readFileSync(args.program, 'utf-8');
+      const source = fs.readFileSync(this.currentSourceFile, 'utf-8');
       this.sourceLines = source.split('\n');
-      this.runtime.loadProgram(source);
+      this.runtime.setDebugMode(true);
+      this.runtime.loadProgram(source, this.currentSourceFile);
+      this.runtime.setSourceBreakpoints(this.breakpoints);
 
       // Set up callback for PRINT output – send as custom event so
       // the extension can route it to the dedicated LOGO terminal.
@@ -85,10 +87,10 @@ export class LogoDebugSession extends DebugSession {
           'stdout'
         ));
         
-        this.sendEvent(new StoppedEvent('step', LogoDebugSession.THREAD_ID));
+        this.sendEvent(new StoppedEvent(this.runtime.getLastPauseReason(), LogoDebugSession.THREAD_ID));
       });
 
-      this.sendEvent(new OutputEvent(`Loaded Logo program: ${args.program}\n`));
+      this.sendEvent(new OutputEvent(`Loaded Logo program: ${this.currentSourceFile}\n`));
       
       if (this.stopOnEntry) {
         this.sendEvent(new StoppedEvent('entry', LogoDebugSession.THREAD_ID));
@@ -111,13 +113,11 @@ export class LogoDebugSession extends DebugSession {
     response: DebugProtocol.SetBreakpointsResponse,
     args: DebugProtocol.SetBreakpointsArguments
   ): void {
-    const path = args.source.path as string;
+    const sourcePath = this.normalizeSourcePath(args.source.path as string);
     const clientLines = args.lines || [];
 
-    this.breakpoints.set(path, clientLines);
-    
-    // Update runtime breakpoints
-    this.runtime.setBreakpoints(clientLines);
+    this.breakpoints.set(sourcePath, clientLines);
+    this.runtime.setSourceBreakpoints(this.breakpoints);
 
     const breakpoints = clientLines.map(line => {
       const bp: DebugProtocol.Breakpoint = new Breakpoint(true, line);
@@ -144,7 +144,7 @@ export class LogoDebugSession extends DebugSession {
     args: DebugProtocol.StackTraceArguments
   ): void {
     const callStack = this.runtime.getCallStack();
-    const currentLine = this.runtime.getCurrentLine();
+    const currentLocation = this.runtime.getCurrentLocation();
 
     const frames: StackFrame[] = [];
 
@@ -152,15 +152,17 @@ export class LogoDebugSession extends DebugSession {
     if (callStack.length > 0) {
       // callStack is already callee-first (deepest frame first from getCallStack)
       callStack.forEach((frame, index) => {
+        const frameSourcePath = index === 0 ? currentLocation.sourcePath : frame.sourcePath;
+        const frameLine = index === 0 ? currentLocation.line : frame.line;
         frames.push(
           new StackFrame(
             index,
             frame.procedure,
             new Source(
-              path.basename(this.currentSourceFile),
-              this.currentSourceFile
+              path.basename(frameSourcePath),
+              frameSourcePath
             ),
-            index === 0 ? currentLine : frame.line,
+            frameLine,
             0
           )
         );
@@ -171,10 +173,10 @@ export class LogoDebugSession extends DebugSession {
           0,
           'main',
           new Source(
-            path.basename(this.currentSourceFile),
-            this.currentSourceFile
+            path.basename(currentLocation.sourcePath),
+            currentLocation.sourcePath
           ),
-          currentLine,
+          currentLocation.line,
           0
         )
       );
@@ -306,8 +308,6 @@ export class LogoDebugSession extends DebugSession {
     args: DebugProtocol.ReverseContinueArguments
   ): void {
     const history = this.runtime.getExecutionHistory();
-    const sourceFile = this.currentSourceFile;
-    const breakpoints = this.breakpoints.get(sourceFile) || [];
     
     if (history.length < 2) {
       this.sendEvent(new OutputEvent('Cannot reverse continue: at beginning of execution\n', 'console'));
@@ -327,7 +327,7 @@ export class LogoDebugSession extends DebugSession {
       steppedBack = true;
       
       // Check if this line has a breakpoint
-      if (breakpoints.includes(previousState.currentLine)) {
+      if (this.hasBreakpointAtLocation(previousState.currentSourcePath, previousState.currentLine)) {
         // Found a breakpoint, stop here
         break;
       }
@@ -402,6 +402,15 @@ export class LogoDebugSession extends DebugSession {
     } finally {
       this.isRunning = false;
     }
+  }
+
+  private normalizeSourcePath(sourcePath: string): string {
+    return path.resolve(sourcePath);
+  }
+
+  private hasBreakpointAtLocation(sourcePath: string, line: number): boolean {
+    const breakpoints = this.breakpoints.get(this.normalizeSourcePath(sourcePath)) || [];
+    return breakpoints.includes(line);
   }
 }
 

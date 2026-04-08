@@ -1,4 +1,6 @@
 // Logo Runtime - implements the Logo language interpreter
+import * as fs from 'fs';
+import * as path from 'path';
 
 class StopException extends Error {
   constructor() {
@@ -31,26 +33,38 @@ export interface DrawCommand {
   angle?: number;
 }
 
+export type LogoValue = number | string;
+
+export interface LogoToken {
+  value: string;
+  line: number;
+  sourcePath: string;
+}
+
 export interface LogoProcedure {
   name: string;
   params: string[];
-  body: any[];
+  body: LogoToken[];
+  sourcePath: string;
   sourceLineStart: number;
   sourceLineEnd: number;
 }
 
 export interface ExecutionState {
   turtle: TurtleState;
-  variables: Map<string, number>;
+  variables: Map<string, LogoValue>;
   drawCommands: DrawCommand[];
-  callStack: Array<{ procedure: string; line: number; vars: Map<string, number> }>;
+  callStack: Array<{ procedure: string; line: number; vars: Map<string, LogoValue>; sourcePath: string }>;
   currentLine: number;
+  currentSourcePath: string;
   executionIndex: number;
 }
 
 export type StepMode = 'continue' | 'stepOver' | 'stepIn' | 'stepOut' | null;
 
 export class LogoRuntime {
+  private static readonly MEMORY_SOURCE_PATH = '<memory>';
+
   private turtle: TurtleState = {
     x: 0,
     y: 0,
@@ -61,13 +75,15 @@ export class LogoRuntime {
   };
 
   private procedures: Map<string, LogoProcedure> = new Map();
-  private variables: Map<string, number> = new Map();
-  private callStack: Array<{ procedure: string; line: number; vars: Map<string, number> }> = [];
+  private variables: Map<string, LogoValue> = new Map();
+  private callStack: Array<{ procedure: string; line: number; vars: Map<string, LogoValue>; sourcePath: string }> = [];
   private drawCommands: DrawCommand[] = [];
   private sourceLines: string[] = [];
+  private rootSourcePath: string = LogoRuntime.MEMORY_SOURCE_PATH;
   private currentLine: number = 0;
+  private currentSourcePath: string = LogoRuntime.MEMORY_SOURCE_PATH;
   private stopExecution: boolean = false;
-  private breakpoints: Set<number> = new Set();
+  private breakpoints: Map<string, Set<number>> = new Map();
   private stepMode: StepMode = null;
   private stepStartCallStackDepth: number = 0;
   private executionHistory: ExecutionState[] = [];
@@ -75,20 +91,35 @@ export class LogoRuntime {
   private onStepCallback?: () => void;
   private onPrintCallback?: (message: string) => void;
   private pauseRequested: boolean = false;
-  private executionTokens: Array<{ value: string; line: number }> = [];
+  private executionTokens: LogoToken[] = [];
   private executionIndex: number = 0;
   private lastSteppedLine: number = -1;
+  private lastSteppedSourcePath: string = LogoRuntime.MEMORY_SOURCE_PATH;
   private insideSingleLineBlock: boolean = false;
+  private debugMode: boolean = false;
+  private opaqueExecutionDepth: number = 0;
+  private activeLoadStack: string[] = [];
+  private pendingPauseReason: 'step' | 'breakpoint' = 'step';
+  private lastPauseReason: 'step' | 'breakpoint' = 'step';
 
   constructor() {}
 
-  public loadProgram(source: string): void {
+  public loadProgram(source: string, rootFilePath?: string): void {
     this.sourceLines = source.split('\n');
+    this.rootSourcePath = this.normalizeSourcePath(rootFilePath);
     this.procedures.clear();
     this.variables.clear();
+    this.callStack = [];
     this.drawCommands = [];
+    this.executionHistory = [];
+    this.activeLoadStack = [];
+    this.breakpoints.clear();
+    this.currentLine = 0;
+    this.currentSourcePath = this.rootSourcePath;
+    this.lastSteppedLine = -1;
+    this.lastSteppedSourcePath = this.rootSourcePath;
     this.resetTurtle();
-    this.parse(source);
+    this.parse(source, this.rootSourcePath);
   }
 
   private resetTurtle(): void {
@@ -114,33 +145,60 @@ export class LogoRuntime {
     return this.currentLine;
   }
 
-  public getCallStack(): Array<{ procedure: string; line: number }> {
-    // Return in callee-first order (deepest frame first) for DAP compliance
-    return this.callStack.map(frame => ({
-      procedure: frame.procedure,
-      line: frame.line
-    })).reverse();
+  public getCurrentLocation(): { line: number; sourcePath: string } {
+    return {
+      line: this.currentLine,
+      sourcePath: this.currentSourcePath
+    };
   }
 
-  public getVariables(): Map<string, number> {
+  public getCallStack(): Array<{ procedure: string; line: number; sourcePath: string }> {
+    return this.callStack
+      .map(frame => ({
+        procedure: frame.procedure,
+        line: frame.line,
+        sourcePath: frame.sourcePath
+      }))
+      .reverse();
+  }
+
+  public getVariables(): Map<string, LogoValue> {
     return new Map(this.variables);
   }
 
-  public setBreakpoints(lines: number[]): void {
-    this.breakpoints = new Set(lines);
+  public setBreakpoints(lines: number[], sourcePath?: string): void {
+    const normalizedSourcePath = this.normalizeSourcePath(sourcePath ?? this.rootSourcePath);
+    this.breakpoints.set(normalizedSourcePath, new Set(lines));
+  }
+
+  public setSourceBreakpoints(breakpointsBySource: Map<string, number[]>): void {
+    this.breakpoints.clear();
+    breakpointsBySource.forEach((lines, sourcePath) => {
+      const normalizedSourcePath = this.normalizeSourcePath(sourcePath);
+      this.breakpoints.set(normalizedSourcePath, new Set(lines));
+    });
   }
 
   public setStepMode(mode: StepMode): void {
     this.stepMode = mode;
     this.stepStartCallStackDepth = this.callStack.length;
+    this.lastSteppedSourcePath = this.currentSourcePath;
   }
 
   public setStepCallback(callback: () => void): void {
     this.onStepCallback = callback;
   }
 
+  public getLastPauseReason(): 'step' | 'breakpoint' {
+    return this.lastPauseReason;
+  }
+
   public setPrintCallback(callback: (message: string) => void): void {
     this.onPrintCallback = callback;
+  }
+
+  public setDebugMode(enabled: boolean): void {
+    this.debugMode = enabled;
   }
 
   public getExecutionHistory(): ExecutionState[] {
@@ -154,12 +212,15 @@ export class LogoRuntime {
     this.callStack = state.callStack.map(frame => ({
       procedure: frame.procedure,
       line: frame.line,
-      vars: new Map(frame.vars)
+      vars: new Map(frame.vars),
+      sourcePath: frame.sourcePath
     }));
     this.currentLine = state.currentLine;
+    this.currentSourcePath = state.currentSourcePath;
     this.executionIndex = state.executionIndex;
     // Reset lastSteppedLine so step over/in/out work correctly after stepping back
     this.lastSteppedLine = -1;
+    this.lastSteppedSourcePath = this.currentSourcePath;
   }
 
   private saveExecutionState(): void {
@@ -170,9 +231,11 @@ export class LogoRuntime {
       callStack: this.callStack.map(frame => ({
         procedure: frame.procedure,
         line: frame.line,
-        vars: new Map(frame.vars)
+        vars: new Map(frame.vars),
+        sourcePath: frame.sourcePath
       })),
       currentLine: this.currentLine,
+      currentSourcePath: this.currentSourcePath,
       executionIndex: this.executionIndex
     };
 
@@ -184,18 +247,91 @@ export class LogoRuntime {
     }
   }
 
-  private shouldPause(): boolean {
-    // Never pause if we're inside a single-line block
+  private normalizeSourcePath(filePath?: string): string {
+    if (!filePath) {
+      return LogoRuntime.MEMORY_SOURCE_PATH;
+    }
+
+    return path.resolve(filePath);
+  }
+
+  private hasRealSourcePath(sourcePath: string): boolean {
+    return sourcePath !== LogoRuntime.MEMORY_SOURCE_PATH;
+  }
+
+  private isOpaqueDebugExecution(): boolean {
+    return this.debugMode && this.opaqueExecutionDepth > 0;
+  }
+
+  private hasBreakpointAtLine(sourcePath: string, line: number): boolean {
+    const lines = this.breakpoints.get(this.normalizeSourcePath(sourcePath));
+    return lines?.has(line) ?? false;
+  }
+
+  private setCurrentLocation(line: number, sourcePath: string): void {
+    this.currentLine = line;
+    this.currentSourcePath = sourcePath;
+  }
+
+  private shouldTrackVisibleDebugState(sourcePath: string): boolean {
+    return !this.debugMode ||
+      !this.isOpaqueDebugExecution() ||
+      this.hasBreakpointAtLine(sourcePath, this.currentLine);
+  }
+
+  private saveExecutionStateIfVisible(sourcePath: string): void {
+    if (this.shouldTrackVisibleDebugState(sourcePath)) {
+      this.saveExecutionState();
+    }
+  }
+
+  private shouldPauseAtLine(sourcePath: string): boolean {
+    const isNewLocation = this.currentLine !== this.lastSteppedLine ||
+      sourcePath !== this.lastSteppedSourcePath;
+    const shouldPauseForBreakpoint = this.hasBreakpointAtLine(sourcePath, this.currentLine) &&
+      isNewLocation;
+    if (shouldPauseForBreakpoint) {
+      this.pendingPauseReason = 'breakpoint';
+      return true;
+    }
+
+    if (!this.shouldTrackVisibleDebugState(sourcePath)) {
+      return false;
+    }
+
+    const shouldPauseForStepMode = isNewLocation &&
+      this.shouldPauseForStepMode();
+    if (shouldPauseForStepMode) {
+      this.pendingPauseReason = 'step';
+    }
+    return shouldPauseForStepMode;
+  }
+
+  private async runOpaqueIfNeeded<T>(opaque: boolean, fn: () => Promise<T>): Promise<T> {
+    if (!opaque) {
+      return fn();
+    }
+
+    const previousLine = this.currentLine;
+    const previousSourcePath = this.currentSourcePath;
+    this.opaqueExecutionDepth++;
+    try {
+      return await fn();
+    } finally {
+      this.opaqueExecutionDepth = Math.max(0, this.opaqueExecutionDepth - 1);
+      if (!this.pauseRequested) {
+        this.currentLine = previousLine;
+        this.currentSourcePath = previousSourcePath;
+      }
+    }
+  }
+
+  private shouldPause(sourcePath: string): boolean {
     if (this.insideSingleLineBlock) {
       return false;
     }
 
-    // Check breakpoint
-    if (this.breakpoints.has(this.currentLine)) {
-      return true;
-    }
-
-    return this.shouldPauseForStepMode();
+    return this.shouldPauseAtLine(sourcePath);
   }
 
   private shouldPauseForStepMode(): boolean {
@@ -215,18 +351,32 @@ export class LogoRuntime {
     return false;
   }
 
+  private savePausedLoadState(targetPath: string, tokens: LogoToken[], index: number): void {
+    const states: Array<{ targetPath: string; tokens: LogoToken[]; index: number }> =
+      (this as any)._pausedLoadStates || [];
+    const existingIndex = states.findIndex(state => state.targetPath === targetPath);
+    if (existingIndex !== -1) {
+      states.splice(existingIndex, 1);
+    }
+    states.push({ targetPath, tokens, index });
+    (this as any)._pausedLoadStates = states;
+  }
+
   private async pauseExecution(): Promise<void> {
     // Clear step mode (it's been completed)
     this.stepMode = null;
     this.lastSteppedLine = this.currentLine; // Remember where we paused
+    this.lastSteppedSourcePath = this.currentSourcePath;
+    this.lastPauseReason = this.pendingPauseReason;
+    this.pendingPauseReason = 'step';
     if (this.onStepCallback) {
       this.onStepCallback();
     }
     // Return immediately - the debug adapter will control continuation
   }
 
-  private parse(source: string): void {
-    const tokens = this.tokenize(source);
+  private parse(source: string, sourcePath: string): void {
+    const tokens = this.tokenize(source, sourcePath);
     let i = 0;
 
     while (i < tokens.length) {
@@ -240,8 +390,8 @@ export class LogoRuntime {
     }
   }
 
-  private tokenize(source: string): Array<{ value: string; line: number }> {
-    const tokens: Array<{ value: string; line: number }> = [];
+  private tokenize(source: string, sourcePath: string = this.rootSourcePath): LogoToken[] {
+    const tokens: LogoToken[] = [];
     const lines = source.split('\n');
 
     for (let lineNum = 0; lineNum < lines.length; lineNum++) {
@@ -257,7 +407,7 @@ export class LogoRuntime {
       if (!line) continue;
 
       // First split on spaces, brackets, and parentheses
-      const parts = line.match(/:[A-Za-z_][A-Za-z0-9_]*|"[^"]*"|\(|\)|\[|\]|[^\s\[\]\(\)]+/g) || [];
+      const parts = line.match(/:[A-Za-z_][A-Za-z0-9_]*|"[^\s\[\]\(\)]*|\(|\)|\[|\]|[^\s\[\]\(\)]+/g) || [];
 
       for (const part of parts) {
         // If it's not a variable or string, further split on operators
@@ -265,10 +415,10 @@ export class LogoRuntime {
           // Split on operators while keeping them
           const subParts = part.split(/([+\-*\/=<>])/).filter(p => p.length > 0);
           for (const subPart of subParts) {
-            tokens.push({ value: subPart, line: lineNum + 1 });
+            tokens.push({ value: subPart, line: lineNum + 1, sourcePath });
           }
         } else {
-          tokens.push({ value: part, line: lineNum + 1 });
+          tokens.push({ value: part, line: lineNum + 1, sourcePath });
         }
       }
     }
@@ -277,7 +427,7 @@ export class LogoRuntime {
   }
 
   private parseProcedure(
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number
   ): { procedure: LogoProcedure; nextIndex: number } {
     let i = startIndex + 1;
@@ -309,7 +459,14 @@ export class LogoRuntime {
     const endLine = i < tokens.length ? tokens[i].line : tokens[tokens.length - 1].line;
 
     return {
-      procedure: { name, params, body, sourceLineStart: startLine, sourceLineEnd: endLine },
+      procedure: {
+        name,
+        params,
+        body,
+        sourcePath: tokens[startIndex].sourcePath,
+        sourceLineStart: startLine,
+        sourceLineEnd: endLine
+      },
       nextIndex: i + 1
     };
   }
@@ -321,7 +478,7 @@ export class LogoRuntime {
     } else {
       // Starting fresh execution
       this.stopExecution = false;
-      this.executionTokens = this.tokenize(this.sourceLines.join('\n'));
+      this.executionTokens = this.tokenize(this.sourceLines.join('\n'), this.rootSourcePath);
       this.executionIndex = 0;
       this.executionHistory = []; // Clear history for new execution
       this.lastSteppedLine = -1; // Reset last stepped line
@@ -343,25 +500,23 @@ export class LogoRuntime {
       } else {
         // Get the line number for the current command
         const currentLineNum = token.line;
-        this.currentLine = currentLineNum;
+        this.setCurrentLocation(currentLineNum, token.sourcePath);
 
         // Check if we're resuming from inside a nested construct (procedure/REPEAT).
         // If so, skip the pause check — the nested construct handles its own pausing.
-        const resumingInsideNested = ((this as any)._pausedProcStates && (this as any)._pausedProcStates.length > 0) || ((this as any)._pausedRepeatStates && (this as any)._pausedRepeatStates.length > 0);
+        const resumingInsideNested =
+          ((this as any)._pausedProcStates && (this as any)._pausedProcStates.length > 0) ||
+          ((this as any)._pausedRepeatStates && (this as any)._pausedRepeatStates.length > 0) ||
+          ((this as any)._pausedLoadStates && (this as any)._pausedLoadStates.length > 0);
 
         // Save state before executing (for reverse debugging)
-        this.saveExecutionState();
+        this.saveExecutionStateIfVisible(token.sourcePath);
 
         // Check if we should pause before executing this line
         // When resuming from a nested construct, skip this check entirely to avoid
         // re-triggering breakpoints at the call site.
         if (!resumingInsideNested) {
-          const shouldPauseForBreakpoint = this.breakpoints.has(this.currentLine) &&
-                                           this.currentLine !== this.lastSteppedLine;
-          const shouldPauseForStepMode = this.currentLine !== this.lastSteppedLine &&
-                                         this.shouldPauseForStepMode();
-
-          if (shouldPauseForBreakpoint || shouldPauseForStepMode) {
+          if (this.shouldPauseAtLine(token.sourcePath)) {
             this.pauseRequested = true;
             await this.pauseExecution();
             return false; // Paused, not complete
@@ -417,7 +572,7 @@ export class LogoRuntime {
   }
 
   private async executeCommand(
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number
   ): Promise<{ nextIndex: number; value?: any }> {
     if (startIndex >= tokens.length) {
@@ -430,26 +585,26 @@ export class LogoRuntime {
     // Turtle movement commands
     if (cmd === 'FD' || cmd === 'FORWARD') {
       const distance = await this.evaluateExpression(tokens, startIndex + 1);
-      this.forward(distance.value);
+      this.forward(this.asNumber(distance.value));
       return { nextIndex: distance.nextIndex };
     }
 
     if (cmd === 'BK' || cmd === 'BACK' || cmd === 'BACKWARD') {
       const distance = await this.evaluateExpression(tokens, startIndex + 1);
-      this.forward(-distance.value);
+      this.forward(-this.asNumber(distance.value));
       return { nextIndex: distance.nextIndex };
     }
 
     if (cmd === 'ARC') {
       const angle = await this.evaluateExpression(tokens, startIndex + 1);
       const radius = await this.evaluateExpression(tokens, angle.nextIndex);
-      this.arc(angle.value, radius.value);
+      this.arc(this.asNumber(angle.value), this.asNumber(radius.value));
       return { nextIndex: radius.nextIndex };
     }
 
     if (cmd === 'RT' || cmd === 'RIGHT') {
       const angle = await this.evaluateExpression(tokens, startIndex + 1);
-      this.turtle.angle += angle.value;
+      this.turtle.angle += this.asNumber(angle.value);
       // Create a move command to update the turtle's rotation immediately
       this.drawCommands.push({
         type: 'move',
@@ -461,7 +616,7 @@ export class LogoRuntime {
 
     if (cmd === 'LT' || cmd === 'LEFT') {
       const angle = await this.evaluateExpression(tokens, startIndex + 1);
-      this.turtle.angle -= angle.value;
+      this.turtle.angle -= this.asNumber(angle.value);
       // Create a move command to update the turtle's rotation immediately
       this.drawCommands.push({
         type: 'move',
@@ -473,7 +628,7 @@ export class LogoRuntime {
 
     if (cmd === 'SETH' || cmd === 'SETHEADING') {
       const angle = await this.evaluateExpression(tokens, startIndex + 1);
-      this.turtle.angle = angle.value;
+      this.turtle.angle = this.asNumber(angle.value);
       // Create a move command to update the turtle's rotation immediately
       this.drawCommands.push({
         type: 'move',
@@ -568,7 +723,7 @@ export class LogoRuntime {
 
     if (cmd === 'SETPENCOLOR' || cmd === 'SETPC') {
       const color = await this.evaluateExpression(tokens, startIndex + 1);
-      this.turtle.penColor = this.numberToColor(color.value);
+      this.turtle.penColor = this.numberToColor(this.asNumber(color.value));
       return { nextIndex: color.nextIndex };
     }
 
@@ -610,6 +765,12 @@ export class LogoRuntime {
       return { nextIndex: endIndex };
     }
 
+    if (cmd === 'LOAD') {
+      const targetPath = this.resolveLoadTarget(tokens, startIndex);
+      await this.loadAndExecuteFile(targetPath);
+      return { nextIndex: startIndex + 2 };
+    }
+
     // Control structures
     if (cmd === 'REPEAT') {
       return await this.executeRepeat(tokens, startIndex);
@@ -640,7 +801,7 @@ export class LogoRuntime {
         throw new Error('MAKE expects a value expression');
       }
 
-      const result = await this.evaluateExpression(tokens, valueIndex);
+      const result = await this.evaluateValue(tokens, valueIndex);
       this.variables.set(makeName, result.value);
       return { nextIndex: result.nextIndex };
     }
@@ -677,7 +838,7 @@ export class LogoRuntime {
   }
 
   private async executeRepeat(
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number
   ): Promise<{ nextIndex: number }> {
     const count = await this.evaluateExpression(tokens, startIndex + 1);
@@ -740,7 +901,7 @@ export class LogoRuntime {
       (this as any)._pausedRepeatStates = pausedStatesArr;
     }
 
-    for (let rep = repStart; rep < count.value && !this.stopExecution && !this.pauseRequested; rep++) {
+    for (let rep = repStart; rep < this.asNumber(count.value) && !this.stopExecution && !this.pauseRequested; rep++) {
       let j = resumeJ !== null ? resumeJ : blockStart;
       // When resuming, initialise lastLineInBlock to the resume line so we
       // don't re-trigger a pause check for a line we already paused at/past.
@@ -754,26 +915,21 @@ export class LogoRuntime {
         // For multi-line blocks, check if we moved to a new line
         if (!isSingleLine && currentLineNum !== lastLineInBlock && currentLineNum !== -1) {
           lastLineInBlock = currentLineNum;
-          this.currentLine = currentLineNum;
+          this.setCurrentLocation(currentLineNum, tokens[j].sourcePath);
 
           // Save state for reverse debugging
-          this.saveExecutionState();
+          this.saveExecutionStateIfVisible(tokens[j].sourcePath);
 
           // Check if we should pause (skip if on same line we just paused at)
           // When there are deeper paused procedure/repeat states, suppress pause checks
           // so this REPEAT passes through to reach the actual paused location.
           const repeatPassingThrough = ((this as any)._pausedProcStates && (this as any)._pausedProcStates.length > 0) ||
                                        ((this as any)._pausedRepeatStates && (this as any)._pausedRepeatStates.length > 0);
-          const shouldPauseForBreakpoint = !repeatPassingThrough && this.breakpoints.has(this.currentLine) &&
-                                           this.currentLine !== this.lastSteppedLine;
-          const shouldPauseForStepMode = !repeatPassingThrough && this.currentLine !== this.lastSteppedLine &&
-                                         this.shouldPauseForStepMode();
-
-          if (shouldPauseForBreakpoint || shouldPauseForStepMode) {
+          if (!repeatPassingThrough && this.shouldPauseAtLine(tokens[j].sourcePath)) {
             // Only pause if we are not suppressing pauses for this block
             if (!(this as any)._suppressPauseCounter) {
               // Save repeat state to resume later
-              this._pushRepeatState(repeatLine, count.value, rep, j, blockStart, blockEnd, i, isSingleLine);
+              this._pushRepeatState(repeatLine, this.asNumber(count.value), rep, j, blockStart, blockEnd, i, isSingleLine);
 
               this.insideSingleLineBlock = false;
               this.pauseRequested = true;
@@ -789,7 +945,7 @@ export class LogoRuntime {
                 // Clear suppression for step out
                 (this as any)._suppressPauseCounter = 0;
                 // Save repeat state
-                this._pushRepeatState(repeatLine, count.value, rep, j, blockStart, blockEnd, i, isSingleLine);
+                this._pushRepeatState(repeatLine, this.asNumber(count.value), rep, j, blockStart, blockEnd, i, isSingleLine);
                 this.insideSingleLineBlock = false;
                 this.pauseRequested = true;
                 await this.pauseExecution();
@@ -809,7 +965,7 @@ export class LogoRuntime {
               break;
             }
 
-            this.currentLine = tokenLine;
+            this.setCurrentLocation(tokenLine, tokens[j].sourcePath);
             const result = await this.executeCommand(tokens, j);
             j = result.nextIndex;
           }
@@ -822,7 +978,7 @@ export class LogoRuntime {
             }
             // A procedure call (or deeper construct) inside the REPEAT body
             // paused execution. Save current repeat state so we can resume.
-            this._pushRepeatState(repeatLine, count.value, rep, j, blockStart, blockEnd, i, isSingleLine);
+            this._pushRepeatState(repeatLine, this.asNumber(count.value), rep, j, blockStart, blockEnd, i, isSingleLine);
             throw e;
           }
           throw e;
@@ -851,7 +1007,7 @@ export class LogoRuntime {
   }
 
   private async executeIf(
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number
   ): Promise<{ nextIndex: number }> {
     const condition = await this.evaluateExpression(tokens, startIndex + 1);
@@ -890,7 +1046,7 @@ export class LogoRuntime {
     }
 
     // Execute the block if condition is true (non-zero)
-    if (condition.value !== 0) {
+    if (this.asNumber(condition.value) !== 0) {
       let j = blockStart;
       let lastLineInBlock = -1;
 
@@ -901,18 +1057,13 @@ export class LogoRuntime {
         // For multi-line blocks, check if we moved to a new line
         if (!isSingleLine && currentLineNum !== lastLineInBlock && currentLineNum !== -1) {
           lastLineInBlock = currentLineNum;
-          this.currentLine = currentLineNum;
+          this.setCurrentLocation(currentLineNum, tokens[j].sourcePath);
 
           // Save state for reverse debugging
-          this.saveExecutionState();
+          this.saveExecutionStateIfVisible(tokens[j].sourcePath);
 
           // Check if we should pause (skip if on same line we just paused at)
-          const shouldPauseForBreakpoint = this.breakpoints.has(this.currentLine) &&
-                                           this.currentLine !== this.lastSteppedLine;
-          const shouldPauseForStepMode = this.currentLine !== this.lastSteppedLine &&
-                                         this.shouldPauseForStepMode();
-
-          if (shouldPauseForBreakpoint || shouldPauseForStepMode) {
+          if (this.shouldPauseAtLine(tokens[j].sourcePath)) {
             this.insideSingleLineBlock = false;
             this.pauseRequested = true;
             await this.pauseExecution();
@@ -929,7 +1080,7 @@ export class LogoRuntime {
             break;
           }
 
-          this.currentLine = tokenLine;
+          this.setCurrentLocation(tokenLine, tokens[j].sourcePath);
           const result = await this.executeCommand(tokens, j);
           j = result.nextIndex;
         }
@@ -945,7 +1096,7 @@ export class LogoRuntime {
   }
 
   private async executeIfElse(
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number
   ): Promise<{ nextIndex: number }> {
     const condition = await this.evaluateExpression(tokens, startIndex + 1);
@@ -985,8 +1136,8 @@ export class LogoRuntime {
 
     const falseBlockEnd = i - 1;
 
-    const blockStart = condition.value !== 0 ? trueBlockStart : falseBlockStart;
-    const blockEnd = condition.value !== 0 ? trueBlockEnd : falseBlockEnd;
+    const blockStart = this.asNumber(condition.value) !== 0 ? trueBlockStart : falseBlockStart;
+    const blockEnd = this.asNumber(condition.value) !== 0 ? trueBlockEnd : falseBlockEnd;
 
     // Determine if this is a single-line IFELSE block
     const ifElseLine = tokens[startIndex].line;
@@ -1013,18 +1164,13 @@ export class LogoRuntime {
       // For multi-line blocks, check if we moved to a new line
       if (!isSingleLine && currentLineNum !== lastLineInBlock && currentLineNum !== -1) {
         lastLineInBlock = currentLineNum;
-        this.currentLine = currentLineNum;
+        this.setCurrentLocation(currentLineNum, tokens[j].sourcePath);
 
         // Save state for reverse debugging
-        this.saveExecutionState();
+        this.saveExecutionStateIfVisible(tokens[j].sourcePath);
 
         // Check if we should pause (skip if on same line we just paused at)
-        const shouldPauseForBreakpoint = this.breakpoints.has(this.currentLine) &&
-                                         this.currentLine !== this.lastSteppedLine;
-        const shouldPauseForStepMode = this.currentLine !== this.lastSteppedLine &&
-                                       this.shouldPauseForStepMode();
-
-        if (shouldPauseForBreakpoint || shouldPauseForStepMode) {
+        if (this.shouldPauseAtLine(tokens[j].sourcePath)) {
           this.insideSingleLineBlock = false;
           this.pauseRequested = true;
           await this.pauseExecution();
@@ -1041,7 +1187,7 @@ export class LogoRuntime {
           break;
         }
 
-        this.currentLine = tokenLine;
+        this.setCurrentLocation(tokenLine, tokens[j].sourcePath);
         const result = await this.executeCommand(tokens, j);
         j = result.nextIndex;
       }
@@ -1057,7 +1203,7 @@ export class LogoRuntime {
 
   private async executeProcedure(
     name: string,
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number,
     callSiteLine?: number
   ): Promise<{ nextIndex: number; value?: any }> {
@@ -1075,7 +1221,7 @@ export class LogoRuntime {
     const isResuming = pausedStates.length > 0 && pausedStates[0].procName === name &&
                        pausedStates[0].callSiteLine === callSiteLine;
 
-    let savedVars: Map<string, number>;
+    let savedVars: Map<string, LogoValue>;
     let i: number;
 
     let resumeBodyIndex: number | null = null;
@@ -1111,16 +1257,19 @@ export class LogoRuntime {
       this.callStack.push({
         procedure: proc.name,
         line: proc.sourceLineStart,
-        vars: new Map(this.variables)
+        vars: new Map(this.variables),
+        sourcePath: proc.sourcePath
       });
 
       // If the user requested a 'stepIn' from the call site, pause at the procedure entry now
       // We do this after argument binding and after pushing the call frame so the stack reflects the entry
-      if (this.stepMode === 'stepIn' && typeof callSiteLine === 'number' && this.lastSteppedLine === callSiteLine) {
+      if (this.stepMode === 'stepIn' &&
+          typeof callSiteLine === 'number' &&
+          this.lastSteppedLine === callSiteLine) {
         // Pause at procedure definition line
-        this.currentLine = proc.sourceLineStart;
-        this.saveExecutionState();
-        if (this.shouldPause()) {
+        this.setCurrentLocation(proc.sourceLineStart, proc.sourcePath);
+        this.saveExecutionStateIfVisible(proc.sourcePath);
+        if (this.shouldPause(proc.sourcePath)) {
           this.pauseRequested = true;
           (this as any)._pausedOnProcedureEntry = { callSiteLine, procName: name };
 
@@ -1148,26 +1297,22 @@ export class LogoRuntime {
     let skipResumeLinePause = isResuming && resumeBodyIndex !== null && ((this as any)._pausedRepeatStates && (this as any)._pausedRepeatStates.length > 0);
 
     try {
-      while (j < proc.body.length && !this.stopExecution && !this.pauseRequested) {
+      await this.runOpaqueIfNeeded(false, async () => {
+        while (j < proc.body.length && !this.stopExecution && !this.pauseRequested) {
         const currentLineNum = j < proc.body.length ? proc.body[j].line : -1;
 
         if (currentLineNum !== lastLineInProc && currentLineNum !== -1) {
           lastLineInProc = currentLineNum;
-          this.currentLine = currentLineNum;
+          this.setCurrentLocation(currentLineNum, proc.body[j].sourcePath);
 
-          this.saveExecutionState();
+          this.saveExecutionStateIfVisible(proc.body[j].sourcePath);
 
           // When there are deeper paused procedure states in the stack, we're "passing through"
           // this procedure to reach the actual paused location — suppress all pause checks.
           // Also suppress once when passing through a resume line to reach a paused REPEAT.
           const passingThrough = ((this as any)._pausedProcStates && (this as any)._pausedProcStates.length > 0) || skipResumeLinePause;
           if (skipResumeLinePause) skipResumeLinePause = false;
-          const shouldPauseForBreakpoint = !passingThrough && this.breakpoints.has(this.currentLine) &&
-                                           this.currentLine !== this.lastSteppedLine;
-          const shouldPauseForStepMode = !passingThrough && this.currentLine !== this.lastSteppedLine &&
-                                         this.shouldPauseForStepMode();
-
-          if (shouldPauseForBreakpoint || shouldPauseForStepMode) {
+          if (!passingThrough && this.shouldPauseAtLine(proc.body[j].sourcePath)) {
             this.pauseRequested = true;
 
             // Initialize/update the paused states stack with this procedure's state
@@ -1197,13 +1342,14 @@ export class LogoRuntime {
           if (tokenLine !== currentLineNum) {
             break;
           }
-          this.currentLine = tokenLine;
+          this.setCurrentLocation(tokenLine, proc.body[j].sourcePath);
           const result = await this.executeCommand(proc.body, j);
           j = result.nextIndex;
         }
         // Guard passed for this line — clear so breakpoints re-trigger on revisit
         this.lastSteppedLine = -1;
-      }
+        }
+      });
     } catch (e) {
       if (e instanceof StopException) {
         // STOP just exits this procedure
@@ -1251,9 +1397,9 @@ export class LogoRuntime {
 
         if (this.stepMode === 'stepOut' && this.callStack.length < this.stepStartCallStackDepth) {
           if (typeof callSiteLine === 'number') {
-            this.currentLine = callSiteLine;
+            this.setCurrentLocation(callSiteLine, this.rootSourcePath);
           }
-          this.saveExecutionState();
+          this.saveExecutionStateIfVisible(this.rootSourcePath);
           this.pauseRequested = true;
           await this.pauseExecution();
           // Save the nextIndex so callers catching PauseException can advance
@@ -1272,9 +1418,9 @@ export class LogoRuntime {
   }
 
   private async evaluateExpression(
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number
-  ): Promise<{ value: number; nextIndex: number }> {
+  ): Promise<{ value: LogoValue; nextIndex: number }> {
     if (startIndex >= tokens.length) {
       return { value: 0, nextIndex: startIndex };
     }
@@ -1282,10 +1428,26 @@ export class LogoRuntime {
     return this.parseExpression(tokens, startIndex);
   }
 
-  private async parseExpression(
-    tokens: Array<{ value: string; line: number }>,
+  private async evaluateValue(
+    tokens: LogoToken[],
     startIndex: number
-  ): Promise<{ value: number; nextIndex: number }> {
+  ): Promise<{ value: LogoValue; nextIndex: number }> {
+    if (startIndex >= tokens.length) {
+      return { value: 0, nextIndex: startIndex };
+    }
+
+    const token = tokens[startIndex];
+    if (token.value.startsWith('"')) {
+      return { value: token.value.substring(1), nextIndex: startIndex + 1 };
+    }
+
+    return this.evaluateExpression(tokens, startIndex);
+  }
+
+  private async parseExpression(
+    tokens: LogoToken[],
+    startIndex: number
+  ): Promise<{ value: LogoValue; nextIndex: number }> {
     // Parse left-to-right so operators are left-associative.
     let left = await this.parsePrimary(tokens, startIndex);
 
@@ -1298,14 +1460,16 @@ export class LogoRuntime {
       const right = await this.parsePrimary(tokens, left.nextIndex + 1);
 
       let result = 0;
+      const leftNumber = this.asNumber(left.value);
+      const rightNumber = this.asNumber(right.value);
       switch (op) {
-        case '+': result = left.value + right.value; break;
-        case '-': result = left.value - right.value; break;
-        case '*': result = left.value * right.value; break;
-        case '/': result = right.value !== 0 ? left.value / right.value : 0; break;
+        case '+': result = leftNumber + rightNumber; break;
+        case '-': result = leftNumber - rightNumber; break;
+        case '*': result = leftNumber * rightNumber; break;
+        case '/': result = rightNumber !== 0 ? leftNumber / rightNumber : 0; break;
         case '=': result = left.value === right.value ? 1 : 0; break;
-        case '<': result = left.value < right.value ? 1 : 0; break;
-        case '>': result = left.value > right.value ? 1 : 0; break;
+        case '<': result = leftNumber < rightNumber ? 1 : 0; break;
+        case '>': result = leftNumber > rightNumber ? 1 : 0; break;
       }
 
       left = { value: result, nextIndex: right.nextIndex };
@@ -1315,9 +1479,9 @@ export class LogoRuntime {
   }
 
   private async parsePrimary(
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number
-  ): Promise<{ value: number; nextIndex: number }> {
+  ): Promise<{ value: LogoValue; nextIndex: number }> {
     if (startIndex >= tokens.length) {
       return { value: 0, nextIndex: startIndex };
     }
@@ -1329,6 +1493,10 @@ export class LogoRuntime {
       return { value: parseFloat(token.value), nextIndex: startIndex + 1 };
     }
 
+    if (token.value.startsWith('"')) {
+      return { value: token.value.substring(1), nextIndex: startIndex + 1 };
+    }
+
     // Variable
     if (token.value.startsWith(':')) {
       const varName = token.value.substring(1); // Remove ':' prefix
@@ -1338,12 +1506,13 @@ export class LogoRuntime {
 
     if (token.value.toUpperCase() === 'RANDOM') {
       const upperBound = await this.parsePrimary(tokens, startIndex + 1);
-      if (upperBound.value <= 0) {
+      const numericUpperBound = this.asNumber(upperBound.value);
+      if (numericUpperBound <= 0) {
         return { value: 0, nextIndex: upperBound.nextIndex };
       }
 
       return {
-        value: Math.floor(Math.random() * upperBound.value),
+        value: Math.floor(Math.random() * numericUpperBound),
         nextIndex: upperBound.nextIndex
       };
     }
@@ -1375,7 +1544,7 @@ export class LogoRuntime {
   }
 
   private async parseListArgument(
-    tokens: Array<{ value: string; line: number }>,
+    tokens: LogoToken[],
     startIndex: number
   ): Promise<{ values: number[]; nextIndex: number }> {
     const values: number[] = [];
@@ -1389,7 +1558,7 @@ export class LogoRuntime {
     // Parse values until we hit the closing bracket
     while (i < tokens.length && tokens[i].value !== ']') {
       const result = await this.evaluateExpression(tokens, i);
-      values.push(result.value);
+      values.push(this.asNumber(result.value));
       i = result.nextIndex;
     }
 
@@ -1399,6 +1568,129 @@ export class LogoRuntime {
     }
 
     return { values, nextIndex: i };
+  }
+
+  private asNumber(value: LogoValue): number {
+    if (typeof value === 'number') {
+      return value;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private resolveLoadTarget(tokens: LogoToken[], startIndex: number): string {
+    const commandToken = tokens[startIndex];
+    const filenameToken = tokens[startIndex + 1];
+    if (!filenameToken || filenameToken.line !== commandToken.line) {
+      throw new Error('LOAD expects a filename argument');
+    }
+
+    let filename: string;
+    if (filenameToken.value.startsWith('"')) {
+      filename = filenameToken.value.substring(1);
+    } else if (filenameToken.value.startsWith(':')) {
+      const varName = filenameToken.value.substring(1);
+      const variableValue = this.variables.get(varName);
+      if (typeof variableValue !== 'string' || variableValue.length === 0) {
+        throw new Error(`LOAD variable '${varName}' must contain a filename`);
+      }
+      filename = variableValue;
+    } else {
+      throw new Error('LOAD expects a quoted filename or filename variable');
+    }
+
+    if (tokens[startIndex + 2] && tokens[startIndex + 2].line === commandToken.line) {
+      throw new Error('LOAD expects exactly 1 argument');
+    }
+
+    if (path.isAbsolute(filename)) {
+      return path.normalize(filename);
+    }
+    if (!this.hasRealSourcePath(commandToken.sourcePath)) {
+      throw new Error('LOAD requires a real source file path for relative paths');
+    }
+
+    return path.resolve(path.dirname(commandToken.sourcePath), filename);
+  }
+
+  private async loadAndExecuteFile(targetPath: string): Promise<void> {
+    const normalizedPath = path.normalize(targetPath);
+    if (this.activeLoadStack.includes(normalizedPath)) {
+      const chain = [...this.activeLoadStack, normalizedPath].join(' -> ');
+      throw new Error(`Cyclic LOAD detected: ${chain}`);
+    }
+
+    const pausedLoadStates: Array<{ targetPath: string; tokens: LogoToken[]; index: number }> =
+      (this as any)._pausedLoadStates || [];
+    const pausedLoadStateIndex = pausedLoadStates.findIndex(state => state.targetPath === normalizedPath);
+
+    let loadedTokens: LogoToken[];
+    let index = 0;
+    if (pausedLoadStateIndex !== -1) {
+      const pausedState = pausedLoadStates.splice(pausedLoadStateIndex, 1)[0];
+      (this as any)._pausedLoadStates = pausedLoadStates;
+      loadedTokens = pausedState.tokens;
+      index = pausedState.index;
+    } else {
+      let source: string;
+      try {
+        source = fs.readFileSync(normalizedPath, 'utf8');
+      } catch (error) {
+        throw new Error(`LOAD failed for ${normalizedPath}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      this.parse(source, normalizedPath);
+      loadedTokens = this.tokenize(source, normalizedPath);
+    }
+
+    this.activeLoadStack.push(normalizedPath);
+    try {
+      const opaqueLoadedExecution = this.debugMode && this.stepMode === 'stepOver';
+      await this.runOpaqueIfNeeded(opaqueLoadedExecution, async () => {
+        while (index < loadedTokens.length && !this.stopExecution) {
+          const token = loadedTokens[index];
+          if (token.value.toUpperCase() === 'TO') {
+            let depth = 1;
+            index++;
+            while (index < loadedTokens.length && depth > 0) {
+              const current = loadedTokens[index].value.toUpperCase();
+              if (current === 'TO') depth++;
+              else if (current === 'END') depth--;
+              index++;
+            }
+            continue;
+          }
+
+          const currentLineNum = token.line;
+          this.setCurrentLocation(currentLineNum, token.sourcePath);
+          this.saveExecutionStateIfVisible(token.sourcePath);
+          if (this.shouldPauseAtLine(token.sourcePath)) {
+            this.savePausedLoadState(normalizedPath, loadedTokens, index);
+            this.pauseRequested = true;
+            await this.pauseExecution();
+            throw new PauseException();
+          }
+
+          try {
+            while (index < loadedTokens.length &&
+                   !this.stopExecution &&
+                   loadedTokens[index].line === currentLineNum) {
+              const result = await this.executeCommand(loadedTokens, index);
+              index = result.nextIndex;
+            }
+          } catch (e) {
+            if (e instanceof PauseException) {
+              this.savePausedLoadState(normalizedPath, loadedTokens, index);
+            }
+            throw e;
+          }
+          this.lastSteppedLine = -1;
+        }
+      });
+    } finally {
+      this.activeLoadStack.pop();
+    }
   }
 
   private forward(distance: number): void {
