@@ -56,6 +56,7 @@ export interface ExecutionState {
   drawCommands: DrawCommand[];
   callStack: Array<{ procedure: string; line: number; vars: Map<string, LogoValue>; sourcePath: string }>;
   currentLine: number;
+  currentSourcePath: string;
   executionIndex: number;
 }
 
@@ -80,6 +81,7 @@ export class LogoRuntime {
   private sourceLines: string[] = [];
   private rootSourcePath: string = LogoRuntime.MEMORY_SOURCE_PATH;
   private currentLine: number = 0;
+  private currentSourcePath: string = LogoRuntime.MEMORY_SOURCE_PATH;
   private stopExecution: boolean = false;
   private breakpoints: Set<number> = new Set();
   private stepMode: StepMode = null;
@@ -92,6 +94,7 @@ export class LogoRuntime {
   private executionTokens: LogoToken[] = [];
   private executionIndex: number = 0;
   private lastSteppedLine: number = -1;
+  private lastSteppedSourcePath: string = LogoRuntime.MEMORY_SOURCE_PATH;
   private insideSingleLineBlock: boolean = false;
   private debugMode: boolean = false;
   private opaqueExecutionDepth: number = 0;
@@ -108,6 +111,10 @@ export class LogoRuntime {
     this.drawCommands = [];
     this.executionHistory = [];
     this.activeLoadStack = [];
+    this.currentLine = 0;
+    this.currentSourcePath = this.rootSourcePath;
+    this.lastSteppedLine = -1;
+    this.lastSteppedSourcePath = this.rootSourcePath;
     this.resetTurtle();
     this.parse(source, this.rootSourcePath);
   }
@@ -135,12 +142,19 @@ export class LogoRuntime {
     return this.currentLine;
   }
 
-  public getCallStack(): Array<{ procedure: string; line: number }> {
+  public getCurrentLocation(): { line: number; sourcePath: string } {
+    return {
+      line: this.currentLine,
+      sourcePath: this.currentSourcePath
+    };
+  }
+
+  public getCallStack(): Array<{ procedure: string; line: number; sourcePath: string }> {
     return this.callStack
-      .filter(frame => frame.sourcePath === this.rootSourcePath)
       .map(frame => ({
         procedure: frame.procedure,
-        line: frame.line
+        line: frame.line,
+        sourcePath: frame.sourcePath
       }))
       .reverse();
   }
@@ -156,6 +170,7 @@ export class LogoRuntime {
   public setStepMode(mode: StepMode): void {
     this.stepMode = mode;
     this.stepStartCallStackDepth = this.callStack.length;
+    this.lastSteppedSourcePath = this.currentSourcePath;
   }
 
   public setStepCallback(callback: () => void): void {
@@ -185,9 +200,11 @@ export class LogoRuntime {
       sourcePath: frame.sourcePath
     }));
     this.currentLine = state.currentLine;
+    this.currentSourcePath = state.currentSourcePath;
     this.executionIndex = state.executionIndex;
     // Reset lastSteppedLine so step over/in/out work correctly after stepping back
     this.lastSteppedLine = -1;
+    this.lastSteppedSourcePath = this.currentSourcePath;
   }
 
   private saveExecutionState(): void {
@@ -202,6 +219,7 @@ export class LogoRuntime {
         sourcePath: frame.sourcePath
       })),
       currentLine: this.currentLine,
+      currentSourcePath: this.currentSourcePath,
       executionIndex: this.executionIndex
     };
 
@@ -229,8 +247,13 @@ export class LogoRuntime {
     return this.debugMode && this.opaqueExecutionDepth > 0;
   }
 
-  private shouldTrackVisibleDebugState(sourcePath: string): boolean {
-    return !this.debugMode || (!this.isOpaqueDebugExecution() && sourcePath === this.rootSourcePath);
+  private setCurrentLocation(line: number, sourcePath: string): void {
+    this.currentLine = line;
+    this.currentSourcePath = sourcePath;
+  }
+
+  private shouldTrackVisibleDebugState(_sourcePath: string): boolean {
+    return !this.debugMode || !this.isOpaqueDebugExecution();
   }
 
   private saveExecutionStateIfVisible(sourcePath: string): void {
@@ -244,9 +267,12 @@ export class LogoRuntime {
       return false;
     }
 
-    const shouldPauseForBreakpoint = this.breakpoints.has(this.currentLine) &&
-      this.currentLine !== this.lastSteppedLine;
-    const shouldPauseForStepMode = this.currentLine !== this.lastSteppedLine &&
+    const isNewLocation = this.currentLine !== this.lastSteppedLine ||
+      sourcePath !== this.lastSteppedSourcePath;
+    const shouldPauseForBreakpoint = sourcePath === this.rootSourcePath &&
+      this.breakpoints.has(this.currentLine) &&
+      isNewLocation;
+    const shouldPauseForStepMode = isNewLocation &&
       this.shouldPauseForStepMode();
     return shouldPauseForBreakpoint || shouldPauseForStepMode;
   }
@@ -257,27 +283,23 @@ export class LogoRuntime {
     }
 
     const previousLine = this.currentLine;
+    const previousSourcePath = this.currentSourcePath;
     this.opaqueExecutionDepth++;
     try {
       return await fn();
     } finally {
       this.opaqueExecutionDepth = Math.max(0, this.opaqueExecutionDepth - 1);
       this.currentLine = previousLine;
+      this.currentSourcePath = previousSourcePath;
     }
   }
 
-  private shouldPause(): boolean {
-    // Never pause if we're inside a single-line block
+  private shouldPause(sourcePath: string): boolean {
     if (this.insideSingleLineBlock) {
       return false;
     }
 
-    // Check breakpoint
-    if (this.breakpoints.has(this.currentLine)) {
-      return true;
-    }
-
-    return this.shouldPauseForStepMode();
+    return this.shouldPauseAtLine(sourcePath);
   }
 
   private shouldPauseForStepMode(): boolean {
@@ -301,6 +323,7 @@ export class LogoRuntime {
     // Clear step mode (it's been completed)
     this.stepMode = null;
     this.lastSteppedLine = this.currentLine; // Remember where we paused
+    this.lastSteppedSourcePath = this.currentSourcePath;
     if (this.onStepCallback) {
       this.onStepCallback();
     }
@@ -432,7 +455,7 @@ export class LogoRuntime {
       } else {
         // Get the line number for the current command
         const currentLineNum = token.line;
-        this.currentLine = currentLineNum;
+        this.setCurrentLocation(currentLineNum, token.sourcePath);
 
         // Check if we're resuming from inside a nested construct (procedure/REPEAT).
         // If so, skip the pause check — the nested construct handles its own pausing.
@@ -844,7 +867,7 @@ export class LogoRuntime {
         // For multi-line blocks, check if we moved to a new line
         if (!isSingleLine && currentLineNum !== lastLineInBlock && currentLineNum !== -1) {
           lastLineInBlock = currentLineNum;
-          this.currentLine = currentLineNum;
+          this.setCurrentLocation(currentLineNum, tokens[j].sourcePath);
 
           // Save state for reverse debugging
           this.saveExecutionStateIfVisible(tokens[j].sourcePath);
@@ -894,7 +917,7 @@ export class LogoRuntime {
               break;
             }
 
-            this.currentLine = tokenLine;
+            this.setCurrentLocation(tokenLine, tokens[j].sourcePath);
             const result = await this.executeCommand(tokens, j);
             j = result.nextIndex;
           }
@@ -986,7 +1009,7 @@ export class LogoRuntime {
         // For multi-line blocks, check if we moved to a new line
         if (!isSingleLine && currentLineNum !== lastLineInBlock && currentLineNum !== -1) {
           lastLineInBlock = currentLineNum;
-          this.currentLine = currentLineNum;
+          this.setCurrentLocation(currentLineNum, tokens[j].sourcePath);
 
           // Save state for reverse debugging
           this.saveExecutionStateIfVisible(tokens[j].sourcePath);
@@ -1009,7 +1032,7 @@ export class LogoRuntime {
             break;
           }
 
-          this.currentLine = tokenLine;
+          this.setCurrentLocation(tokenLine, tokens[j].sourcePath);
           const result = await this.executeCommand(tokens, j);
           j = result.nextIndex;
         }
@@ -1093,7 +1116,7 @@ export class LogoRuntime {
       // For multi-line blocks, check if we moved to a new line
       if (!isSingleLine && currentLineNum !== lastLineInBlock && currentLineNum !== -1) {
         lastLineInBlock = currentLineNum;
-        this.currentLine = currentLineNum;
+        this.setCurrentLocation(currentLineNum, tokens[j].sourcePath);
 
         // Save state for reverse debugging
         this.saveExecutionStateIfVisible(tokens[j].sourcePath);
@@ -1116,7 +1139,7 @@ export class LogoRuntime {
           break;
         }
 
-        this.currentLine = tokenLine;
+        this.setCurrentLocation(tokenLine, tokens[j].sourcePath);
         const result = await this.executeCommand(tokens, j);
         j = result.nextIndex;
       }
@@ -1197,9 +1220,9 @@ export class LogoRuntime {
           typeof callSiteLine === 'number' &&
           this.lastSteppedLine === callSiteLine) {
         // Pause at procedure definition line
-        this.currentLine = proc.sourceLineStart;
+        this.setCurrentLocation(proc.sourceLineStart, proc.sourcePath);
         this.saveExecutionStateIfVisible(proc.sourcePath);
-        if (this.shouldPause()) {
+        if (this.shouldPause(proc.sourcePath)) {
           this.pauseRequested = true;
           (this as any)._pausedOnProcedureEntry = { callSiteLine, procName: name };
 
@@ -1235,7 +1258,7 @@ export class LogoRuntime {
 
         if (currentLineNum !== lastLineInProc && currentLineNum !== -1) {
           lastLineInProc = currentLineNum;
-          this.currentLine = currentLineNum;
+          this.setCurrentLocation(currentLineNum, proc.body[j].sourcePath);
 
           this.saveExecutionStateIfVisible(proc.body[j].sourcePath);
 
@@ -1274,7 +1297,7 @@ export class LogoRuntime {
           if (tokenLine !== currentLineNum) {
             break;
           }
-          this.currentLine = tokenLine;
+          this.setCurrentLocation(tokenLine, proc.body[j].sourcePath);
           const result = await this.executeCommand(proc.body, j);
           j = result.nextIndex;
         }
@@ -1329,7 +1352,7 @@ export class LogoRuntime {
 
         if (this.stepMode === 'stepOut' && this.callStack.length < this.stepStartCallStackDepth) {
           if (typeof callSiteLine === 'number') {
-            this.currentLine = callSiteLine;
+            this.setCurrentLocation(callSiteLine, this.rootSourcePath);
           }
           this.saveExecutionStateIfVisible(this.rootSourcePath);
           this.pauseRequested = true;
@@ -1564,7 +1587,8 @@ export class LogoRuntime {
     try {
       this.parse(source, normalizedPath);
       const loadedTokens = this.tokenize(source, normalizedPath);
-      await this.runOpaqueIfNeeded(this.debugMode, async () => {
+      const opaqueLoadedExecution = this.debugMode;
+      await this.runOpaqueIfNeeded(opaqueLoadedExecution, async () => {
         let index = 0;
         while (index < loadedTokens.length && !this.stopExecution) {
           const token = loadedTokens[index];
