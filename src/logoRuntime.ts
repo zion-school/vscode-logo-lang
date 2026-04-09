@@ -1448,30 +1448,76 @@ export class LogoRuntime {
     tokens: LogoToken[],
     startIndex: number
   ): Promise<{ value: LogoValue; nextIndex: number }> {
-    // Parse left-to-right so operators are left-associative.
-    let left = await this.parsePrimary(tokens, startIndex);
+    return this.parseComparison(tokens, startIndex);
+  }
+
+  private async parseComparison(
+    tokens: LogoToken[],
+    startIndex: number
+  ): Promise<{ value: LogoValue; nextIndex: number }> {
+    let left = await this.parseAdditive(tokens, startIndex);
 
     while (left.nextIndex < tokens.length) {
       const op = tokens[left.nextIndex].value;
-      if (!['+', '-', '*', '/', '=', '<', '>'].includes(op)) {
+      if (!['=', '<', '>'].includes(op)) {
         break;
       }
 
-      const right = await this.parsePrimary(tokens, left.nextIndex + 1);
+      const right = await this.parseAdditive(tokens, left.nextIndex + 1);
 
       let result = 0;
       const leftNumber = this.asNumber(left.value);
       const rightNumber = this.asNumber(right.value);
       switch (op) {
-        case '+': result = leftNumber + rightNumber; break;
-        case '-': result = leftNumber - rightNumber; break;
-        case '*': result = leftNumber * rightNumber; break;
-        case '/': result = rightNumber !== 0 ? leftNumber / rightNumber : 0; break;
         case '=': result = left.value === right.value ? 1 : 0; break;
         case '<': result = leftNumber < rightNumber ? 1 : 0; break;
         case '>': result = leftNumber > rightNumber ? 1 : 0; break;
       }
 
+      left = { value: result, nextIndex: right.nextIndex };
+    }
+
+    return left;
+  }
+
+  private async parseAdditive(
+    tokens: LogoToken[],
+    startIndex: number
+  ): Promise<{ value: LogoValue; nextIndex: number }> {
+    let left = await this.parseMultiplicative(tokens, startIndex);
+
+    while (left.nextIndex < tokens.length) {
+      const op = tokens[left.nextIndex].value;
+      if (!['+', '-'].includes(op)) {
+        break;
+      }
+
+      const right = await this.parseMultiplicative(tokens, left.nextIndex + 1);
+      const leftNumber = this.asNumber(left.value);
+      const rightNumber = this.asNumber(right.value);
+      const result = op === '+' ? leftNumber + rightNumber : leftNumber - rightNumber;
+      left = { value: result, nextIndex: right.nextIndex };
+    }
+
+    return left;
+  }
+
+  private async parseMultiplicative(
+    tokens: LogoToken[],
+    startIndex: number
+  ): Promise<{ value: LogoValue; nextIndex: number }> {
+    let left = await this.parsePrimary(tokens, startIndex);
+
+    while (left.nextIndex < tokens.length) {
+      const op = tokens[left.nextIndex].value;
+      if (!['*', '/'].includes(op)) {
+        break;
+      }
+
+      const right = await this.parsePrimary(tokens, left.nextIndex + 1);
+      const leftNumber = this.asNumber(left.value);
+      const rightNumber = this.asNumber(right.value);
+      const result = op === '*' ? leftNumber * rightNumber : (rightNumber !== 0 ? leftNumber / rightNumber : 0);
       left = { value: result, nextIndex: right.nextIndex };
     }
 
@@ -1487,6 +1533,14 @@ export class LogoRuntime {
     }
 
     const token = tokens[startIndex];
+    if (token.value === '+' || token.value === '-') {
+      const operand = await this.parsePrimary(tokens, startIndex + 1);
+      const numericOperand = this.asNumber(operand.value);
+      return {
+        value: token.value === '-' ? -numericOperand : numericOperand,
+        nextIndex: operand.nextIndex
+      };
+    }
 
     // Number literal
     if (/^-?[0-9]+(\.[0-9]+)?$/.test(token.value)) {
@@ -1514,6 +1568,23 @@ export class LogoRuntime {
       return {
         value: Math.floor(Math.random() * numericUpperBound),
         nextIndex: upperBound.nextIndex
+      };
+    }
+
+    if (token.value.toUpperCase() === 'INT') {
+      const operand = await this.parsePrimary(tokens, startIndex + 1);
+      return {
+        value: Math.trunc(this.asNumber(operand.value)),
+        nextIndex: operand.nextIndex
+      };
+    }
+
+    if (token.value.toUpperCase() === 'REMAINDER') {
+      const dividend = await this.parsePrimary(tokens, startIndex + 1);
+      const divisor = await this.parsePrimary(tokens, dividend.nextIndex);
+      return {
+        value: this.computeRemainder(this.asNumber(dividend.value), this.asNumber(divisor.value)),
+        nextIndex: divisor.nextIndex
       };
     }
 
@@ -1577,6 +1648,14 @@ export class LogoRuntime {
 
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private computeRemainder(dividend: number, divisor: number): number {
+    if (divisor === 0) {
+      return 0;
+    }
+
+    return dividend - Math.trunc(dividend / divisor) * divisor;
   }
 
   private resolveLoadTarget(tokens: LogoToken[], startIndex: number): string {

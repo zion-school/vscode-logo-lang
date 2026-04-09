@@ -76,6 +76,8 @@ export class LogoCompletionProvider implements vscode.CompletionItemProvider {
 
     const mathCommands: LogoCompletionItem[] = [
       { label: 'RANDOM', detail: 'Random integer from 0 to n-1', kind: vscode.CompletionItemKind.Function },
+      { label: 'INT', detail: 'Integer part of a number (truncate toward zero)', kind: vscode.CompletionItemKind.Function },
+      { label: 'REMAINDER', detail: 'Remainder of a division with truncating semantics', kind: vscode.CompletionItemKind.Function },
     ];
 
     // Code snippets
