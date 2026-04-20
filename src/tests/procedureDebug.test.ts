@@ -1339,6 +1339,915 @@ FLOWER 70
     console.log('  ✅ Mixed stepping behavioral tests done\n');
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  //  REVERSE DEBUGGING – stepBack and reverseContinue
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Mimic debugAdapter.stepBackRequest: pop current state, restore previous. */
+  function stepBack(rt: LogoRuntime): boolean {
+    const history = rt.getExecutionHistory();
+    if (history.length < 2) return false;
+    const previous = history[history.length - 2];
+    rt.restoreState(previous);
+    history.pop();
+    return true;
+  }
+
+  /** Mimic debugAdapter.reverseContinueRequest: step back through history until a breakpoint (or start). */
+  function reverseContinue(rt: LogoRuntime, breakpointLines: Set<number>): boolean {
+    const history = rt.getExecutionHistory();
+    if (history.length < 2) return false;
+    let steppedBack = false;
+    while (history.length >= 2) {
+      history.pop();
+      const previous = history[history.length - 1];
+      rt.restoreState(previous);
+      steppedBack = true;
+      if (breakpointLines.has(previous.currentLine)) break;
+    }
+    return steppedBack;
+  }
+
+  /** Resume forward execution after a restoreState; mirrors `cont` but for post-restore resume. */
+  async function resumeForward(rt: LogoRuntime): Promise<boolean> {
+    (rt as any).pauseRequested = true;
+    rt.setStepMode('continue');
+    (rt as any).lastSteppedLine = rt.getCurrentLine();
+    return rt.execute();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  29. stepBack – basic: return to the previous paused line
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 29. Reverse: stepBack returns to previous line ---');
+  {
+    const src = [
+      'FD 10',
+      'RT 90',
+      'FD 20',
+      'RT 90',
+      'FD 30',
+    ].join('\n');
+
+    const { rt } = await launch(src, [1]);
+    assert(rt.getCurrentLine() === 1, `29a: paused at line 1, got ${rt.getCurrentLine()}`);
+
+    // Step forward a few times
+    let done = await step(rt, 'stepIn');
+    assert(!done, '29b: paused');
+    assert(rt.getCurrentLine() === 2, `29c: at line 2, got ${rt.getCurrentLine()}`);
+    done = await step(rt, 'stepIn');
+    assert(!done, '29d: paused');
+    assert(rt.getCurrentLine() === 3, `29e: at line 3, got ${rt.getCurrentLine()}`);
+
+    // Step back – should return to line 2
+    assert(stepBack(rt), '29f: stepBack succeeded');
+    assert(rt.getCurrentLine() === 2, `29g: stepBack to line 2, got ${rt.getCurrentLine()}`);
+
+    // Step back again – line 1
+    assert(stepBack(rt), '29h: stepBack succeeded');
+    assert(rt.getCurrentLine() === 1, `29i: stepBack to line 1, got ${rt.getCurrentLine()}`);
+
+    // State at initial pause should be restored: turtle at origin, no draws
+    const t = rt.getTurtleState();
+    assert(t.x === 0 && t.y === 0 && t.angle === 0,
+      `29j: turtle restored to origin, got (${t.x},${t.y},${t.angle})`);
+    assert(rt.getDrawCommands().filter(c => c.type === 'line').length === 0,
+      `29k: line draws cleared, got ${rt.getDrawCommands().filter(c => c.type === 'line').length}`);
+
+    console.log('  ✅ Basic stepBack tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  30. stepBack – undoes turtle movement (FD) and draw commands
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 30. Reverse: stepBack undoes FD/draw commands ---');
+  {
+    const src = [
+      'FD 100',
+      'RT 90',
+      'FD 50',
+    ].join('\n');
+
+    const { rt } = await launch(src, [1]);
+    const t0 = rt.getTurtleState();
+    const d0 = rt.getDrawCommands().length;
+    assert(t0.x === 0 && t0.y === 0, `30a: origin, got (${t0.x},${t0.y})`);
+
+    // Step over FD 100
+    let done = await step(rt, 'stepOver');
+    assert(!done, '30b: paused');
+    const t1 = rt.getTurtleState();
+    assert(Math.abs(t1.y - 100) < 0.01, `30c: y~100 after FD, got ${t1.y}`);
+    const d1 = rt.getDrawCommands().length;
+    assert(d1 > d0, `30d: draw commands increased (${d0} → ${d1})`);
+
+    // Step back – turtle and draws should revert
+    assert(stepBack(rt), '30e: stepBack');
+    const t2 = rt.getTurtleState();
+    assert(Math.abs(t2.x - t0.x) < 0.01, `30f: x reverted, got ${t2.x}`);
+    assert(Math.abs(t2.y - t0.y) < 0.01, `30g: y reverted, got ${t2.y}`);
+    const d2 = rt.getDrawCommands().length;
+    assert(d2 === d0, `30h: draw commands reverted (${d0} vs ${d2})`);
+
+    console.log('  ✅ stepBack undo turtle/draw tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  31. stepBack – undoes turtle rotation (RT/LT)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 31. Reverse: stepBack undoes rotation ---');
+  {
+    const src = [
+      'RT 45',
+      'RT 90',
+      'LT 30',
+    ].join('\n');
+
+    const { rt } = await launch(src, [1]);
+    assert(Math.abs(rt.getTurtleState().angle - 0) < 0.01, `31a: angle 0`);
+
+    // Step over RT 45
+    let done = await step(rt, 'stepOver');
+    assert(!done, '31b: paused');
+    assert(Math.abs(rt.getTurtleState().angle - 45) < 0.01, `31c: angle 45, got ${rt.getTurtleState().angle}`);
+
+    // Step over RT 90 → 135
+    done = await step(rt, 'stepOver');
+    assert(!done, '31d: paused');
+    assert(Math.abs(rt.getTurtleState().angle - 135) < 0.01, `31e: angle 135, got ${rt.getTurtleState().angle}`);
+
+    // Step back – angle should revert to 45
+    assert(stepBack(rt), '31f: stepBack');
+    assert(Math.abs(rt.getTurtleState().angle - 45) < 0.01, `31g: angle reverted to 45, got ${rt.getTurtleState().angle}`);
+
+    // Step back again – angle 0
+    assert(stepBack(rt), '31h: stepBack');
+    assert(Math.abs(rt.getTurtleState().angle - 0) < 0.01, `31i: angle reverted to 0, got ${rt.getTurtleState().angle}`);
+
+    console.log('  ✅ stepBack rotation tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  32. stepBack – pen state (PU/PD) is restored
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 32. Reverse: stepBack restores pen state ---');
+  {
+    const src = [
+      'FD 10',
+      'PU',
+      'FD 20',
+      'PD',
+      'FD 30',
+    ].join('\n');
+
+    const { rt } = await launch(src, [1]);
+    assert(rt.getTurtleState().penDown === true, `32a: pen down initially`);
+
+    // Step over FD 10 → PU (now at line 2)
+    let done = await step(rt, 'stepOver');
+    assert(!done, '32b');
+    // Step over PU → pen up, now at line 3
+    done = await step(rt, 'stepOver');
+    assert(!done, '32c');
+    assert(rt.getTurtleState().penDown === false, `32d: pen up after PU, got ${rt.getTurtleState().penDown}`);
+
+    // Step back – should restore pen down
+    assert(stepBack(rt), '32e: stepBack');
+    assert(rt.getTurtleState().penDown === true, `32f: pen back to down after stepBack, got ${rt.getTurtleState().penDown}`);
+
+    console.log('  ✅ stepBack pen state tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  33. stepBack – at the beginning is a no-op
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 33. Reverse: stepBack at beginning is a no-op ---');
+  {
+    const src = [
+      'FD 10',
+      'RT 90',
+    ].join('\n');
+
+    const { rt } = await launch(src, [1]);
+    assert(rt.getCurrentLine() === 1, `33a: at line 1`);
+    const hist = rt.getExecutionHistory();
+    assert(hist.length <= 1, `33b: history has ≤1 entry at first pause, got ${hist.length}`);
+
+    // Trying to step back should fail (not enough history)
+    const ok = stepBack(rt);
+    assert(!ok, `33c: stepBack should fail at beginning`);
+    assert(rt.getCurrentLine() === 1, `33d: still at line 1 after failed stepBack`);
+
+    console.log('  ✅ stepBack at-beginning tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  34. reverseContinue – stops at earlier breakpoint
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 34. Reverse: reverseContinue stops at earlier breakpoint ---');
+  {
+    const src = [
+      'FD 10',
+      'RT 90',
+      'FD 20',
+      'RT 90',
+      'FD 30',
+    ].join('\n');
+
+    // Breakpoints at lines 1 and 4 — run to line 4
+    const { rt } = await launch(src, [1, 4]);
+    assert(rt.getCurrentLine() === 1, `34a: first stop at line 1`);
+
+    let done = await cont(rt);
+    assert(!done, '34b: paused at next breakpoint');
+    assert(rt.getCurrentLine() === 4, `34c: at line 4, got ${rt.getCurrentLine()}`);
+
+    // Reverse continue – should stop at line 1 breakpoint
+    const ok = reverseContinue(rt, new Set([1, 4]));
+    assert(ok, '34d: reverseContinue succeeded');
+    assert(rt.getCurrentLine() === 1, `34e: reverseContinue stopped at line 1, got ${rt.getCurrentLine()}`);
+
+    console.log('  ✅ reverseContinue breakpoint tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  35. reverseContinue – no earlier breakpoint runs to start
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 35. Reverse: reverseContinue with no earlier breakpoint ---');
+  {
+    const src = [
+      'FD 10',
+      'RT 90',
+      'FD 20',
+      'RT 90',
+      'FD 30',
+    ].join('\n');
+
+    // Single breakpoint at line 5 only
+    const { rt } = await launch(src, [5]);
+    assert(rt.getCurrentLine() === 5, `35a: at line 5, got ${rt.getCurrentLine()}`);
+
+    // Reverse continue – nothing earlier to stop on, ends up at first history state
+    const ok = reverseContinue(rt, new Set([5]));
+    assert(ok, `35b: reverseContinue stepped back`);
+    const hist = rt.getExecutionHistory();
+    assert(hist.length === 1, `35c: history reduced to 1 entry, got ${hist.length}`);
+
+    // Turtle should be back at start
+    const t = rt.getTurtleState();
+    assert(t.x === 0 && t.y === 0 && t.angle === 0, `35d: turtle at origin, got (${t.x},${t.y},${t.angle})`);
+
+    console.log('  ✅ reverseContinue no-earlier-breakpoint tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  36. stepBack across a procedure call
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 36. Reverse: stepBack across a procedure call ---');
+  {
+    const src = [
+      'TO BOX :S',
+      '  FD :S',
+      '  RT 90',
+      'END',
+      '',
+      'BOX 40',
+      'FD 5',
+    ].join('\n');
+
+    const { rt } = await launch(src, [6]);
+    assert(rt.getCurrentLine() === 6, `36a: at BOX call line 6`);
+
+    // Step into BOX — land on line 1 (procedure entry)
+    let done = await step(rt, 'stepIn');
+    assert(!done, '36b');
+    assert(rt.getCurrentLine() === 1, `36c: at line 1, got ${rt.getCurrentLine()}`);
+
+    // Step to FD :S on line 2
+    done = await step(rt, 'stepIn');
+    assert(!done, '36d');
+    assert(rt.getCurrentLine() === 2, `36e: at line 2, got ${rt.getCurrentLine()}`);
+    assert(rt.getCallStack().length === 1, `36f: inside BOX, got depth ${rt.getCallStack().length}`);
+
+    // Step back – should leave us at line 1 (procedure entry)
+    assert(stepBack(rt), '36g: stepBack');
+    assert(rt.getCurrentLine() === 1, `36h: back at line 1, got ${rt.getCurrentLine()}`);
+
+    // Step back further – should return to line 6 (call site) and pop call stack
+    assert(stepBack(rt), '36i: stepBack');
+    assert(rt.getCurrentLine() === 6, `36j: back at call site line 6, got ${rt.getCurrentLine()}`);
+    assert(rt.getCallStack().length === 0, `36k: call stack empty at call site, got ${rt.getCallStack().length}`);
+
+    console.log('  ✅ stepBack across procedure call tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  37. stepBack across REPEAT iterations
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 37. Reverse: stepBack across REPEAT iterations ---');
+  {
+    const src = [
+      'REPEAT 3 [',
+      '  FD 10',
+      '  RT 120',
+      ']',
+      'FD 0',
+    ].join('\n');
+
+    const { rt } = await launch(src, [2]);
+    assert(rt.getCurrentLine() === 2, `37a: at FD 10 (iter 1)`);
+    const t1 = rt.getTurtleState();
+
+    // Continue to next iteration
+    let done = await cont(rt);
+    assert(!done, '37b');
+    assert(rt.getCurrentLine() === 2, `37c: at FD 10 (iter 2)`);
+    const t2 = rt.getTurtleState();
+    // After iter 1 completes, turtle moved, rotated, and is back at line 2
+    assert(Math.abs(t2.y - t1.y) > 0.01 || Math.abs(t2.angle - t1.angle) > 0.01,
+      `37d: turtle changed between iter 1 and iter 2`);
+
+    // At iter-2 line 2 pause: iter 1 completed (1 FD line drawn), iter 2 FD not yet executed
+    const drawsAtIter2 = rt.getDrawCommands().filter(c => c.type === 'line').length;
+    assert(drawsAtIter2 === 1, `37e: one line drawn after iter 1, got ${drawsAtIter2}`);
+
+    // Step back should rewind into iter 1 (or earlier) — draw count must not exceed 1
+    // and must eventually reach 0 (pre-iter-1) with enough stepBacks.
+    let guard = 0;
+    while (stepBack(rt) && guard < 30) {
+      guard++;
+      const drawsNow = rt.getDrawCommands().filter(c => c.type === 'line').length;
+      assert(drawsNow <= 1, `37f-${guard}: draws never exceed 1 while rewinding, got ${drawsNow}`);
+      if (drawsNow === 0) break;
+    }
+    const finalDraws = rt.getDrawCommands().filter(c => c.type === 'line').length;
+    assert(finalDraws === 0, `37g: full rewind clears draws, got ${finalDraws}`);
+
+    console.log('  ✅ stepBack across REPEAT tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  BEHAVIORAL: reverse debugging must not corrupt subsequent execution
+  // ─────────────────────────────────────────────────────────────────────
+
+  /** Run a program, stepping forward N times, then back N times, then to completion.
+   *  Final state must match a clean run. */
+  async function runForwardBackForward(
+    source: string,
+    breakpoints: number[],
+    forwardSteps: number
+  ): Promise<{ turtle: ReturnType<LogoRuntime['getTurtleState']>; draws: ReturnType<LogoRuntime['getDrawCommands']> }> {
+    const { rt } = await launch(source, breakpoints);
+
+    // Step forward `forwardSteps` times
+    let done = false;
+    for (let i = 0; i < forwardSteps && !done; i++) {
+      done = await step(rt, 'stepIn');
+    }
+
+    // Step back the same number of times (as many as history allows)
+    for (let i = 0; i < forwardSteps; i++) {
+      if (!stepBack(rt)) break;
+    }
+
+    // Now resume to completion (no breakpoints)
+    rt.setBreakpoints([]);
+    done = await resumeForward(rt);
+    let safety = 0;
+    while (!done && safety < 10000) {
+      done = await resumeForward(rt);
+      safety++;
+    }
+    assert(done, `runForwardBackForward: finished within ${safety} resumes`);
+
+    return { turtle: rt.getTurtleState(), draws: rt.getDrawCommands() };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  38. Behavioral: step forward/back/forward matches clean run (simple)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 38. Behavioral: forward/back/forward equivalence (simple) ---');
+  {
+    const src = [
+      'FD 100',
+      'RT 90',
+      'FD 50',
+      'RT 90',
+      'FD 100',
+    ].join('\n');
+
+    const clean = await runClean(src);
+    const fbf = await runForwardBackForward(src, [1], 3);
+
+    turtleEqual(clean.turtle, fbf.turtle, '38a turtle');
+    drawsEqual(clean.draws, fbf.draws, '38b draws');
+
+    console.log('  ✅ forward/back/forward simple tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  39. Behavioral: reverseContinue-then-continue equals clean run
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 39. Behavioral: reverseContinue + continue equals clean run ---');
+  {
+    const src = [
+      'FD 50',
+      'RT 45',
+      'FD 50',
+      'RT 45',
+      'FD 50',
+    ].join('\n');
+
+    const clean = await runClean(src);
+
+    // Put breakpoints at 1 and 5, run to line 5, reverseContinue to line 1, continue to end
+    const { rt } = await launch(src, [1, 5]);
+    assert(rt.getCurrentLine() === 1, `39a: at line 1`);
+    let done = await cont(rt);
+    assert(!done, '39b');
+    assert(rt.getCurrentLine() === 5, `39c: at line 5`);
+
+    // Reverse continue back to line 1
+    const ok = reverseContinue(rt, new Set([1, 5]));
+    assert(ok, '39d: reverseContinue');
+    assert(rt.getCurrentLine() === 1, `39e: back at line 1, got ${rt.getCurrentLine()}`);
+
+    // Clear breakpoints and continue to completion
+    rt.setBreakpoints([]);
+    done = await resumeForward(rt);
+    assert(done, '39f: completed');
+
+    turtleEqual(clean.turtle, rt.getTurtleState(), '39g turtle');
+    drawsEqual(clean.draws, rt.getDrawCommands(), '39h draws');
+
+    console.log('  ✅ reverseContinue+continue equivalence tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  40. Behavioral: stepBack inside procedure, then resume, matches clean run
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 40. Behavioral: stepBack inside procedure ---');
+  {
+    const src = [
+      'TO BOX :S',
+      '  FD :S',
+      '  RT 90',
+      '  FD :S',
+      '  RT 90',
+      '  FD :S',
+      '  RT 90',
+      '  FD :S',
+      '  RT 90',
+      'END',
+      '',
+      'BOX 60',
+    ].join('\n');
+
+    const clean = await runClean(src);
+
+    // Breakpoint on line 4 (second FD :S inside BOX)
+    const { rt } = await launch(src, [4]);
+    assert(rt.getCurrentLine() === 4, `40a: at line 4 inside BOX`);
+    assert(rt.getCallStack().length === 1, `40b: inside BOX`);
+
+    // Step back a couple of times
+    assert(stepBack(rt), '40c');
+    assert(stepBack(rt), '40d');
+
+    // Resume to completion – final state must match clean run
+    rt.setBreakpoints([]);
+    const done = await resumeForward(rt);
+    assert(done, '40e: completed');
+
+    turtleEqual(clean.turtle, rt.getTurtleState(), '40f turtle');
+    drawsEqual(clean.draws, rt.getDrawCommands(), '40g draws');
+
+    console.log('  ✅ stepBack inside procedure behavioral tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  41. Behavioral: full back-to-start + continue matches clean run
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 41. Behavioral: reverseContinue to start + continue ---');
+  {
+    const src = [
+      'TO TRI :S',
+      '  REPEAT 3 [',
+      '    FD :S',
+      '    RT 120',
+      '  ]',
+      'END',
+      '',
+      'TRI 80',
+      'RT 60',
+      'TRI 80',
+    ].join('\n');
+
+    const clean = await runClean(src);
+
+    // Breakpoint at line 10 only
+    const { rt } = await launch(src, [10]);
+    assert(rt.getCurrentLine() === 10, `41a: at line 10, got ${rt.getCurrentLine()}`);
+
+    // Reverse continue — no earlier breakpoint, so steps back to start
+    const ok = reverseContinue(rt, new Set([10]));
+    assert(ok, '41b: stepped back');
+    const hist = rt.getExecutionHistory();
+    assert(hist.length === 1, `41c: history at start, got ${hist.length}`);
+
+    // Clear breakpoints and resume
+    rt.setBreakpoints([]);
+    const done = await resumeForward(rt);
+    assert(done, '41d: completed');
+
+    turtleEqual(clean.turtle, rt.getTurtleState(), '41e turtle');
+    drawsEqual(clean.draws, rt.getDrawCommands(), '41f draws');
+
+    console.log('  ✅ Full reverse-to-start behavioral tests done\n');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  MIRROR PROPERTY – reverse stepping should undo forward stepping
+  // ═══════════════════════════════════════════════════════════════════════
+
+  interface Snapshot {
+    line: number;
+    stackDepth: number;
+    x: number;
+    y: number;
+    angle: number;
+    draws: number;
+  }
+
+  function snapshot(rt: LogoRuntime): Snapshot {
+    const t = rt.getTurtleState();
+    return {
+      line: rt.getCurrentLine(),
+      stackDepth: rt.getCallStack().length,
+      x: t.x,
+      y: t.y,
+      angle: t.angle,
+      draws: rt.getDrawCommands().filter(c => c.type === 'line').length,
+    };
+  }
+
+  function snapshotEqual(a: Snapshot, b: Snapshot, prefix: string): void {
+    const eps = 0.001;
+    assert(a.line === b.line, `${prefix}: line differs (${a.line} vs ${b.line})`);
+    assert(a.stackDepth === b.stackDepth,
+      `${prefix}: stackDepth differs (${a.stackDepth} vs ${b.stackDepth})`);
+    assert(Math.abs(a.x - b.x) < eps, `${prefix}: x differs (${a.x} vs ${b.x})`);
+    assert(Math.abs(a.y - b.y) < eps, `${prefix}: y differs (${a.y} vs ${b.y})`);
+    assert(Math.abs(a.angle - b.angle) < eps,
+      `${prefix}: angle differs (${a.angle} vs ${b.angle})`);
+    assert(a.draws === b.draws, `${prefix}: draw count differs (${a.draws} vs ${b.draws})`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  42. Mirror: stepIn sequence reversed by stepBack (top-level)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 42. Mirror: stepIn / stepBack symmetry (top-level) ---');
+  {
+    const src = [
+      'FD 10',
+      'RT 90',
+      'FD 20',
+      'RT 45',
+      'FD 30',
+    ].join('\n');
+
+    const { rt } = await launch(src, [1]);
+    const forwardSnapshots: Snapshot[] = [snapshot(rt)];
+
+    // Step forward through every line
+    for (let i = 0; i < 4; i++) {
+      const done = await step(rt, 'stepIn');
+      assert(!done, `42a-${i}: paused`);
+      forwardSnapshots.push(snapshot(rt));
+    }
+
+    // Step back the same number of times; each state should match forwardSnapshots in reverse
+    for (let i = forwardSnapshots.length - 1; i > 0; i--) {
+      assert(stepBack(rt), `42b-${i}: stepBack`);
+      const expected = forwardSnapshots[i - 1];
+      snapshotEqual(snapshot(rt), expected, `42c-${i}: stepBack[${i}→${i-1}]`);
+    }
+
+    console.log('  ✅ Top-level mirror tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  43. Mirror: multi-line REPEAT – reverse visits iterations in reverse
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 43. Mirror: multi-line REPEAT reverse stepping ---');
+  {
+    const src = [
+      'REPEAT 3 [',
+      '  FD 20',
+      '  RT 120',
+      ']',
+      'FD 0',
+    ].join('\n');
+
+    const { rt } = await launch(src, [1]);
+    const forwardSnapshots: Snapshot[] = [snapshot(rt)];
+
+    // Step forward through REPEAT iterations
+    for (let i = 0; i < 8; i++) {
+      const done = await step(rt, 'stepIn');
+      if (done) break;
+      forwardSnapshots.push(snapshot(rt));
+    }
+
+    // We should have visited line 2 three times and line 3 three times
+    const line2Visits = forwardSnapshots.filter(s => s.line === 2).length;
+    const line3Visits = forwardSnapshots.filter(s => s.line === 3).length;
+    assert(line2Visits === 3, `43a: visited line 2 three times, got ${line2Visits}`);
+    assert(line3Visits === 3, `43b: visited line 3 three times, got ${line3Visits}`);
+
+    // Step back and verify each state matches the forward sequence in reverse
+    for (let i = forwardSnapshots.length - 1; i > 0; i--) {
+      assert(stepBack(rt), `43c-${i}: stepBack at index ${i}`);
+      const expected = forwardSnapshots[i - 1];
+      snapshotEqual(snapshot(rt), expected, `43d-${i}: REPEAT reverse[${i}→${i-1}]`);
+    }
+
+    console.log('  ✅ Multi-line REPEAT mirror tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  44. Mirror: 3-deep nested procedures – reverse stepping
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 44. Mirror: 3-deep nested procedures reverse stepping ---');
+  {
+    const src = [
+      'TO INNER :N',
+      '  FD :N',
+      '  RT 90',
+      'END',
+      '',
+      'TO MIDDLE :N',
+      '  INNER :N',
+      '  RT 45',
+      'END',
+      '',
+      'TO OUTER :N',
+      '  MIDDLE :N',
+      '  RT 30',
+      'END',
+      '',
+      'OUTER 40',
+    ].join('\n');
+
+    const { rt } = await launch(src, [16]);
+    const forwardSnapshots: Snapshot[] = [snapshot(rt)];
+
+    // Step in until we have descended into INNER (depth 3) and visited a body line
+    let reachedDepth3 = false;
+    for (let i = 0; i < 30; i++) {
+      const done = await step(rt, 'stepIn');
+      if (done) break;
+      forwardSnapshots.push(snapshot(rt));
+      if (rt.getCallStack().length === 3) reachedDepth3 = true;
+    }
+    assert(reachedDepth3, `44a: reached 3-deep call stack`);
+
+    // Step back and verify we visit states matching the forward sequence in reverse
+    for (let i = forwardSnapshots.length - 1; i > 0; i--) {
+      assert(stepBack(rt), `44b-${i}: stepBack`);
+      const expected = forwardSnapshots[i - 1];
+      snapshotEqual(snapshot(rt), expected, `44c-${i}: nested reverse[${i}→${i-1}]`);
+    }
+
+    // Final state is at the OUTER call site with empty stack
+    assert(rt.getCurrentLine() === 16,
+      `44d: back at OUTER call line 16, got ${rt.getCurrentLine()}`);
+    assert(rt.getCallStack().length === 0,
+      `44e: call stack empty at OUTER call site, got ${rt.getCallStack().length}`);
+
+    console.log('  ✅ 3-deep nested procedure mirror tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  45. Mirror: reverseContinue visits breakpoints in reverse order
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 45. Mirror: reverseContinue visits breakpoints in reverse ---');
+  {
+    const src = [
+      'TO INNER :N',
+      '  FD :N',
+      '  RT 90',
+      'END',
+      '',
+      'TO OUTER :N',
+      '  INNER :N',
+      '  RT 30',
+      'END',
+      '',
+      'OUTER 40',
+    ].join('\n');
+
+    // Breakpoints: line 2 (inside INNER), line 7 (inside OUTER), line 11 (call site)
+    const breakpointLines = [2, 7, 11];
+    const { rt } = await launch(src, breakpointLines);
+
+    // Walk forward through all breakpoints, recording lines hit
+    const forwardHits: number[] = [rt.getCurrentLine()];
+    while (true) {
+      const done = await cont(rt);
+      if (done) break;
+      forwardHits.push(rt.getCurrentLine());
+    }
+
+    // Walk backward via reverseContinue and record
+    const reverseHits: number[] = [];
+    const bpSet = new Set(breakpointLines);
+    while (reverseContinue(rt, bpSet)) {
+      reverseHits.push(rt.getCurrentLine());
+      if (rt.getExecutionHistory().length <= 1) break;
+    }
+
+    // Forward hit sequence reversed should match reverse hit sequence
+    const forwardReversed = [...forwardHits].reverse();
+    assert(reverseHits.length > 0, `45a: reverseContinue hit something, got ${reverseHits.length}`);
+    // Going back, the first breakpoint re-entered is the last one hit going forward.
+    for (let i = 0; i < Math.min(reverseHits.length, forwardReversed.length); i++) {
+      assert(reverseHits[i] === forwardReversed[i],
+        `45b-${i}: reverseHit[${i}]=${reverseHits[i]} should equal forwardReversed[${i}]=${forwardReversed[i]}`);
+    }
+
+    console.log('  ✅ reverseContinue breakpoint-order mirror tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  46. Variables: stepBack restores earlier variable bindings
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 46. Reverse: variable restoration ---');
+  {
+    const src = [
+      ':X = 10',
+      ':Y = 20',
+      ':X = :X + :Y',
+      ':Y = :Y * 2',
+    ].join('\n');
+
+    const { rt } = await launch(src, [1]);
+    assert(rt.getCurrentLine() === 1, `46a: at line 1`);
+    assert(rt.getVariables().size === 0, `46b: no vars before line 1, got ${rt.getVariables().size}`);
+
+    // Step through all assignments
+    let done = await step(rt, 'stepIn');
+    assert(!done, '46c'); // at line 2, X=10
+    assert(rt.getVariables().get('X') === 10, `46d: X=10, got ${rt.getVariables().get('X')}`);
+
+    done = await step(rt, 'stepIn');
+    assert(!done, '46e'); // at line 3, X=10, Y=20
+    assert(rt.getVariables().get('Y') === 20, `46f: Y=20, got ${rt.getVariables().get('Y')}`);
+
+    done = await step(rt, 'stepIn');
+    assert(!done, '46g'); // at line 4, X=30, Y=20
+    assert(rt.getVariables().get('X') === 30, `46h: X=30, got ${rt.getVariables().get('X')}`);
+    assert(rt.getVariables().get('Y') === 20, `46i: Y=20, got ${rt.getVariables().get('Y')}`);
+
+    // Step back – should restore X=10, Y=20 (state before line 3 executed)
+    assert(stepBack(rt), '46j: stepBack');
+    assert(rt.getVariables().get('X') === 10,
+      `46k: X back to 10 after stepBack, got ${rt.getVariables().get('X')}`);
+    assert(rt.getVariables().get('Y') === 20,
+      `46l: Y stays 20, got ${rt.getVariables().get('Y')}`);
+
+    // Step back further – should restore only X=10 with no Y yet
+    assert(stepBack(rt), '46m: stepBack');
+    assert(rt.getVariables().get('X') === 10,
+      `46n: X still 10, got ${rt.getVariables().get('X')}`);
+    assert(!rt.getVariables().has('Y'),
+      `46o: Y should be undefined, got ${rt.getVariables().get('Y')}`);
+
+    // Step back once more – both X and Y unset
+    assert(stepBack(rt), '46p: stepBack');
+    assert(!rt.getVariables().has('X'),
+      `46q: X should be undefined, got ${rt.getVariables().get('X')}`);
+
+    console.log('  ✅ Variable restoration tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  47. Mirror: multi-line REPEAT inside procedure (flower-style pattern)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 47. Mirror: multi-line REPEAT inside procedure ---');
+  {
+    const src = [
+      'TO TRI :S',
+      '  REPEAT 3 [',
+      '    FD :S',
+      '    RT 120',
+      '  ]',
+      'END',
+      '',
+      'TRI 50',
+    ].join('\n');
+
+    const { rt } = await launch(src, [8]);
+    assert(rt.getCurrentLine() === 8, `47a: at TRI call`);
+    const forwardSnapshots: Snapshot[] = [snapshot(rt)];
+
+    // Step forward through procedure entry + 3 REPEAT iterations
+    for (let i = 0; i < 15; i++) {
+      const done = await step(rt, 'stepIn');
+      if (done) break;
+      forwardSnapshots.push(snapshot(rt));
+    }
+
+    // Verify we visited the REPEAT body lines inside the procedure
+    const insideProc = forwardSnapshots.filter(s => s.stackDepth >= 1);
+    assert(insideProc.length > 0, `47b: visited procedure body, got ${insideProc.length} snapshots`);
+
+    // Step back the whole way and verify snapshot sequence matches forward in reverse
+    for (let i = forwardSnapshots.length - 1; i > 0; i--) {
+      assert(stepBack(rt), `47c-${i}: stepBack`);
+      const expected = forwardSnapshots[i - 1];
+      snapshotEqual(snapshot(rt), expected, `47d-${i}: REPEAT-in-proc reverse[${i}→${i-1}]`);
+    }
+
+    // Should end back at the TRI call site, stack empty
+    assert(rt.getCurrentLine() === 8, `47e: back at TRI call, got ${rt.getCurrentLine()}`);
+    assert(rt.getCallStack().length === 0,
+      `47f: stack empty at call site, got ${rt.getCallStack().length}`);
+
+    console.log('  ✅ REPEAT-inside-procedure mirror tests done\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  48. Full round-trip: forward N → back N → forward N yields identical
+  //      state to running forward 2N (i.e. reverse is a true inverse)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('--- 48. Mirror: forward/back/forward round-trip on nested program ---');
+  {
+    const src = [
+      'TO BOX :S',
+      '  REPEAT 4 [',
+      '    FD :S',
+      '    RT 90',
+      '  ]',
+      'END',
+      '',
+      'BOX 50',
+      'RT 45',
+      'BOX 50',
+    ].join('\n');
+
+    const clean = await runClean(src);
+
+    // Walk forward with stepIn through the whole thing (no breakpoints)
+    const rt = new LogoRuntime();
+    rt.loadProgram(src);
+    rt.setStepMode('stepIn');
+    let done = await rt.execute();
+    let safety = 0;
+    const forwardSnapshots: Snapshot[] = [snapshot(rt)];
+    while (!done && safety < 500) {
+      done = await step(rt, 'stepIn');
+      // Only record snapshots at pauses — the post-done state has no
+      // corresponding history entry, so including it would break the
+      // 1:1 mapping between forward steps and stepBack-reachable states.
+      if (!done) forwardSnapshots.push(snapshot(rt));
+      safety++;
+    }
+    assert(done, `48a: completed forward walk in ${safety} steps`);
+
+    // Rewind to the forward-walk midpoint and verify state equivalence.
+    const halfWay = Math.floor(forwardSnapshots.length / 2);
+    // From the post-done state, stepBack(k) restores forwardSnapshots[L-1-k]
+    // where L = forwardSnapshots.length. To reach index halfWay we need
+    // (L-1) - halfWay stepBacks.
+    const backSteps = forwardSnapshots.length - 1 - halfWay;
+    for (let i = 0; i < backSteps; i++) {
+      if (!stepBack(rt)) break;
+    }
+
+    // Middle snapshot should match forwardSnapshots[halfWay]
+    const midExpected = forwardSnapshots[halfWay];
+    const midActual = snapshot(rt);
+    snapshotEqual(midActual, midExpected, `48b: midpoint state`);
+
+    // Resume forward to completion
+    rt.setBreakpoints([]);
+    done = await resumeForward(rt);
+    safety = 0;
+    while (!done && safety < 500) {
+      done = await resumeForward(rt);
+      safety++;
+    }
+    assert(done, `48c: completed forward resume in ${safety} steps`);
+
+    // Final state must match a clean run
+    turtleEqual(clean.turtle, rt.getTurtleState(), '48d final turtle');
+    drawsEqual(clean.draws, rt.getDrawCommands(), '48e final draws');
+
+    console.log('  ✅ Round-trip mirror tests done\n');
+  }
+
   // ─────────────────────────────────────────────────────────────────────
   //  Summary
   // ─────────────────────────────────────────────────────────────────────
