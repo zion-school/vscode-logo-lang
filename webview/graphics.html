@@ -71,10 +71,82 @@
             margin-top: 4px;
             font-size: 14px;
         }
+        #canvas-size-info {
+            font-size: 11px;
+            color: #888;
+            margin-top: 2px;
+        }
+        #modal-overlay {
+            position: fixed;
+            inset: 0;
+            background-color: rgba(0, 0, 0, 0.4);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+        }
+        #size-modal {
+            background-color: #252526;
+            border: 1px solid #454545;
+            border-radius: 4px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+            padding: 16px 18px;
+            min-width: 220px;
+            color: #cccccc;
+            font-size: 13px;
+        }
+        #size-modal h3 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            text-align: center;
+        }
+        #size-modal input {
+            width: 100%;
+            box-sizing: border-box;
+            background-color: #3c3c3c;
+            color: #cccccc;
+            border: 1px solid #454545;
+            border-radius: 2px;
+            padding: 4px 6px;
+            font-size: 13px;
+        }
+        #size-modal input:focus {
+            outline: 1px solid #007acc;
+            border-color: #007acc;
+        }
+        #size-modal-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 14px;
+        }
+        #size-modal button {
+            background-color: #3c3c3c;
+            color: #cccccc;
+            border: 1px solid #454545;
+            border-radius: 2px;
+            padding: 4px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        #size-modal button:hover {
+            background-color: #4a4a4a;
+        }
+        #size-modal button.primary {
+            background-color: #0e639c;
+            border-color: #0e639c;
+            color: #fff;
+        }
+        #size-modal button.primary:hover {
+            background-color: #1177bb;
+        }
     </style>
 </head>
 <body>
-    <div id="info">Turtle - Position: (0, 0) | Angle: 0°</div>
+    <div id="info">
+        <div id="turtle-info">Turtle - Position: (0, 0) | Angle: 0°</div>
+        <div id="canvas-size-info">500 × 500</div>
+    </div>
     <div id="canvas-container">
         <canvas id="canvas" width="500" height="500"></canvas>
         <div id="zoom-indicator">100%</div>
@@ -95,6 +167,26 @@
             <span>🔲</span>
             <span>Turn on Grid</span>
         </div>
+        <div class="menu-item" id="size-menu">
+            <span>📐</span>
+            <span>Adjust Canvas Size</span>
+        </div>
+    </div>
+
+    <!-- Canvas Size Modal -->
+    <div id="modal-overlay">
+        <div id="size-modal">
+            <h3>📐 Adjust Canvas Size</h3>
+            <div style="display: flex; gap: 6px; align-items: center;">
+                <input type="number" id="size-width" min="50" max="4000" step="10" />
+                <span>×</span>
+                <input type="number" id="size-height" min="50" max="4000" step="10" />
+            </div>
+            <div id="size-modal-buttons">
+                <button id="size-ok" class="primary">OK</button>
+                <button id="size-cancel">Cancel</button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -103,19 +195,29 @@
         const container = document.getElementById('canvas-container');
         const contextMenu = document.getElementById('context-menu');
         const zoomIndicator = document.getElementById('zoom-indicator');
-        const infoDisplay = document.getElementById('info');
-        
+        const infoDisplay = document.getElementById('turtle-info');
+        const canvasSizeInfo = document.getElementById('canvas-size-info');
+
+        const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
+        const { w: initW = 500, h: initH = 500 } = window.__LOGO_CANVAS_SIZE__ || {};
+
         let currentCommands = [];
         let zoomLevel = 1.0;
         let zoomIndicatorTimeout = null;
         let gridEnabled = false;
-        const baseCanvasSize = 500;
+        let baseCanvasWidth = initW;
+        let baseCanvasHeight = initH;
+        const updateCanvasSizeInfo = () => canvasSizeInfo.textContent = `${baseCanvasWidth} × ${baseCanvasHeight}`;
+        updateCanvasSizeInfo();
         
         // Distance measurement state
         let measuring = false;
         let measureStartPoint = null;
         let measureEndPoint = null;
         let showMeasurement = false;
+
+        canvas.width = baseCanvasWidth; canvas.style.width = baseCanvasWidth + 'px';
+        canvas.height = baseCanvasHeight; canvas.style.height = baseCanvasHeight + 'px';
 
         // Initial drawing setup
         ctx.fillStyle = 'white';
@@ -160,7 +262,7 @@
             currentCommands.forEach(cmd => {
                 if (cmd.type === 'line' && cmd.from && cmd.to) {
                     ctx.strokeStyle = cmd.color || 'black';
-                    ctx.lineWidth = (cmd.width || 2) * zoomLevel;
+                    ctx.lineWidth = (cmd.width || 1.5) * zoomLevel;
                     ctx.beginPath();
                     ctx.moveTo(
                         canvas.width / 2 + cmd.from.x * zoomLevel,
@@ -357,14 +459,15 @@
 
         function applyZoom() {
             // Scale the canvas resolution to maintain crisp rendering
-            const scaledSize = baseCanvasSize * zoomLevel;
-            canvas.width = scaledSize;
-            canvas.height = scaledSize;
-            
+            const scaledWidth = baseCanvasWidth * zoomLevel;
+            const scaledHeight = baseCanvasHeight * zoomLevel;
+            canvas.width = scaledWidth;
+            canvas.height = scaledHeight;
+
             // Scale the canvas display size
-            canvas.style.width = scaledSize + 'px';
-            canvas.style.height = scaledSize + 'px';
-            
+            canvas.style.width = scaledWidth + 'px';
+            canvas.style.height = scaledHeight + 'px';
+
             // Redraw at the new resolution
             redrawCanvas();
         }
@@ -433,6 +536,53 @@
                 console.error('Failed to create blob:', err);
             }
             contextMenu.style.display = 'none';
+        });
+
+        // Adjust Canvas Size
+        const modalOverlay = document.getElementById('modal-overlay');
+        const sizeWidthInput = document.getElementById('size-width');
+        const sizeHeightInput = document.getElementById('size-height');
+
+        function openSizeModal() {
+            sizeWidthInput.value = baseCanvasWidth;
+            sizeHeightInput.value = baseCanvasHeight;
+            modalOverlay.style.display = 'flex';
+            sizeWidthInput.focus();
+            sizeWidthInput.select();
+        }
+
+        function closeSizeModal() {
+            modalOverlay.style.display = 'none';
+        }
+
+        function applySizeModal() {
+            const w = parseInt(sizeWidthInput.value, 10);
+            const h = parseInt(sizeHeightInput.value, 10);
+            if (!Number.isFinite(w) || !Number.isFinite(h) || w < 50 || h < 50 || w > 4000 || h > 4000) {
+                sizeWidthInput.focus();
+                return;
+            }
+            baseCanvasWidth = w;
+            baseCanvasHeight = h;
+            applyZoom();
+            updateCanvasSizeInfo();
+            vscodeApi?.postMessage({ command: 'persistCanvasSize', width: w, height: h });
+            closeSizeModal();
+        }
+
+        document.getElementById('size-menu').addEventListener('click', () => {
+            contextMenu.style.display = 'none';
+            openSizeModal();
+        });
+        document.getElementById('size-cancel').addEventListener('click', closeSizeModal);
+        document.getElementById('size-ok').addEventListener('click', applySizeModal);
+        modalOverlay.addEventListener('click', (e) => {
+            if (e.target === modalOverlay) closeSizeModal();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (modalOverlay.style.display !== 'flex') return;
+            if (e.key === 'Escape') closeSizeModal();
+            else if (e.key === 'Enter') applySizeModal();
         });
 
         // Toggle Grid

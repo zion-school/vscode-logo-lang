@@ -222,6 +222,7 @@ function showGraphicsPanel(context: vscode.ExtensionContext) {
     );
 
     graphicsPanel.webview.html = getWebviewContent(context);
+    wireCanvasSizePersistence(graphicsPanel.webview, context);
 
     graphicsPanel.onDidDispose(() => {
       graphicsPanel = undefined;
@@ -241,12 +242,23 @@ function updateGraphics(commands: DrawCommand[]) {
 function getWebviewContent(context: vscode.ExtensionContext): string {
   const htmlPath = path.join(context.extensionPath, 'webview', 'graphics.html');
   let html = fs.readFileSync(htmlPath, 'utf8');
-  
+
   // Add Content Security Policy
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">`;
   html = html.replace('<meta charset="UTF-8">', `<meta charset="UTF-8">\n    ${cspMeta}`);
-  
+
+  const size = context.globalState.get('logo.canvasSize', { w: 500, h: 500 });
+  html = html.replace('</head>', `<script>window.__LOGO_CANVAS_SIZE__=${JSON.stringify(size)};</script></head>`);
+
   return html;
+}
+
+function wireCanvasSizePersistence(webview: vscode.Webview, context: vscode.ExtensionContext): void {
+  webview.onDidReceiveMessage((m) => {
+    if (m?.command === 'persistCanvasSize') {
+      context.globalState.update('logo.canvasSize', { w: m.width, h: m.height });
+    }
+  });
 }
 
 function showPreviewPanel(context: vscode.ExtensionContext, document: vscode.TextDocument) {
@@ -266,6 +278,7 @@ function showPreviewPanel(context: vscode.ExtensionContext, document: vscode.Tex
     );
 
     previewPanel.webview.html = getWebviewContent(context);
+    wireCanvasSizePersistence(previewPanel.webview, context);
 
     previewPanel.onDidDispose(() => {
       previewPanel = undefined;
