@@ -2,7 +2,7 @@
   "name": "logo-lang",
   "displayName": "Logo Language",
   "description": "Logo Language Interpreter and Debugger",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "publisher": "zion-school",
   "icon": "images/logo-icon.png",
   "repository": {
@@ -141,6 +141,11 @@
       ]
     },
     "keybindings": [
+      {
+        "command": "logo.runFile",
+        "key": "ctrl+f5",
+        "when": "editorLangId == logo"
+      },
       {
         "command": "logo.showPreview",
         "key": "ctrl+shift+v",

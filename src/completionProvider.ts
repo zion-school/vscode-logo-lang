@@ -145,9 +145,26 @@ export class LogoCompletionProvider implements vscode.CompletionItemProvider {
       variables.add(match[0]);
     }
 
+    // If the cursor sits inside a `:var` token, compute the exact range to
+    // replace. Without this, VS Code's default word boundary may not include
+    // the leading `:`, causing the inserted text to be appended to it
+    // (e.g. typing `:S` and selecting `:SIZE` produces `::SIZE`).
+    const lineText = document.lineAt(position.line).text;
+    const before = lineText.substring(0, position.character);
+    const after = lineText.substring(position.character);
+    const startMatch = before.match(/:[A-Za-z0-9_]*$/);
+    let variableRange: vscode.Range | undefined;
+    if (startMatch) {
+      const endMatch = after.match(/^[A-Za-z0-9_]*/);
+      const startCol = position.character - startMatch[0].length;
+      const endCol = position.character + (endMatch ? endMatch[0].length : 0);
+      variableRange = new vscode.Range(position.line, startCol, position.line, endCol);
+    }
+
     variables.forEach(variable => {
       const completionItem = new vscode.CompletionItem(variable, vscode.CompletionItemKind.Variable);
       completionItem.detail = 'Variable';
+      if (variableRange) completionItem.range = variableRange;
       completionItems.push(completionItem);
     });
 

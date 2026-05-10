@@ -10,6 +10,7 @@ Standalone VSCode extension with interpreter and debugger for the Logo programmi
 - **Save images**: Right-click on the preview panel & select "Save as PNG".
 - **Debugging**: Set breakpoints, step through code, inspect variables
 - **Syntax Highlighting**: Logo language syntax highlighting
+- **Basic Code Formatter**: Indentation and spacing for better readability
 - **Syntax Checking**: Basic syntax error detection
 - **Variable Inspection**: View turtle state (position, angle, pen status) and program variables
 
@@ -65,17 +66,11 @@ Standalone VSCode extension with interpreter and debugger for the Logo programmi
 3. The preview panel will open, displaying the Logo graphics.
 4. The preview automatically updates whenever you save the file.
 
-### Debugging
+### Run/Debug
 
 1. Open a `.logo` file in VSCode
-2. Press F5 or select "Debug Logo Program" from the debug menu
-3. The graphics window will open automatically
-4. Use standard debugging controls:
-   - F10: Step over
-   - F11: Step into
-   - Shift+F11: Step out
-   - F5: Continue
-   - Shift+F5: Stop
+2. Place breakpoints if needed
+3. Press **Ctrl+F5** to run/debug the program
 
 ## Examples
 
