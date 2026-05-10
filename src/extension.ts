@@ -5,6 +5,7 @@ import * as path from 'path';
 import { LogoRuntime, DrawCommand } from './logoDebugger';
 import { LogoCompletionProvider } from './completionProvider';
 import { analyzeSource } from './diagnostics';
+import { formatLogoDocument } from './formatter';
 
 let graphicsPanel: vscode.WebviewPanel | undefined;
 let previewPanel: vscode.WebviewPanel | undefined;
@@ -32,6 +33,23 @@ export function activate(context: vscode.ExtensionContext) {
     ':', // Trigger on ':' for variables
   );
   context.subscriptions.push(completionProvider);
+
+  // Register document formatter — wires up Format Document (Shift+Alt+F),
+  // the editor right-click menu, and Format on Save when enabled.
+  const formattingProvider = vscode.languages.registerDocumentFormattingEditProvider(
+    'logo',
+    {
+      provideDocumentFormattingEdits(document) {
+        const formatted = formatLogoDocument(document.getText());
+        const fullRange = new vscode.Range(
+          document.positionAt(0),
+          document.positionAt(document.getText().length)
+        );
+        return [vscode.TextEdit.replace(fullRange, formatted)];
+      }
+    }
+  );
+  context.subscriptions.push(formattingProvider);
 
   // Create diagnostics collection for Logo and wire listeners
   diagnosticsCollection = vscode.languages.createDiagnosticCollection('logo');
