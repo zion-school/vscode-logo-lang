@@ -76,6 +76,26 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
+      const hasBreakpoints = vscode.debug.breakpoints.some(bp =>
+        bp instanceof vscode.SourceBreakpoint &&
+        bp.enabled &&
+        bp.location.uri.toString() === document.uri.toString()
+      );
+
+      if (hasBreakpoints) {
+        await vscode.debug.startDebugging(
+          vscode.workspace.getWorkspaceFolder(document.uri),
+          {
+            type: 'logo',
+            request: 'launch',
+            name: 'Debug Logo Program',
+            program: document.uri.fsPath,
+            stopOnEntry: false
+          }
+        );
+        return;
+      }
+
       try {
         const runtime = new LogoRuntime();
         runtime.loadProgram(document.getText(), document.fileName);

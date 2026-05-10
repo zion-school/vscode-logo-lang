@@ -91,14 +91,9 @@ export class LogoDebugSession extends DebugSession {
       });
 
       this.sendEvent(new OutputEvent(`Loaded Logo program: ${this.currentSourceFile}\n`));
-      
-      if (this.stopOnEntry) {
-        this.sendEvent(new StoppedEvent('entry', LogoDebugSession.THREAD_ID));
-      } else {
-        // Start execution in continue mode
-        this.continueExecution();
-      }
 
+      // Defer execution until configurationDone — by then VS Code will
+      // have sent setBreakpoints, so the runtime sees them.
       this.sendResponse(response);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -130,6 +125,18 @@ export class LogoDebugSession extends DebugSession {
     };
 
     this.sendResponse(response);
+  }
+
+  protected configurationDoneRequest(
+    response: DebugProtocol.ConfigurationDoneResponse,
+    args: DebugProtocol.ConfigurationDoneArguments
+  ): void {
+    super.configurationDoneRequest(response, args);
+    if (this.stopOnEntry) {
+      this.sendEvent(new StoppedEvent('entry', LogoDebugSession.THREAD_ID));
+    } else {
+      this.continueExecution();
+    }
   }
 
   protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {

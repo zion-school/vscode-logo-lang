@@ -117,7 +117,7 @@
         "command": "logo.runFile",
         "title": "Run Logo Program",
         "category": "Logo",
-        "icon": "$(play)"
+        "icon": "$(debug-alt)"
       },
       {
         "command": "logo.showPreview",
