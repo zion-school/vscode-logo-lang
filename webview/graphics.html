@@ -200,6 +200,7 @@
 
         const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
         const { w: initW = 500, h: initH = 500 } = window.__LOGO_CANVAS_SIZE__ || {};
+        let sourceFileName = window.__LOGO_SOURCE_FILE__ || null;
 
         let currentCommands = [];
         let zoomLevel = 1.0;
@@ -231,8 +232,23 @@
             if (message.command === 'draw') {
                 currentCommands = message.commands;
                 redrawCanvas();
+            } else if (message.command === 'setSourceFile') {
+                sourceFileName = message.fileName || null;
             }
         });
+
+        // Build a default PNG filename like `circle-20260510_103045AM.png`.
+        function defaultPngName() {
+            const d = new Date();
+            const pad = n => String(n).padStart(2, '0');
+            const h24 = d.getHours();
+            const ampm = h24 >= 12 ? 'PM' : 'AM';
+            const h12 = ((h24 + 11) % 12) + 1;
+            const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`
+                     + `_${pad(h12)}${pad(d.getMinutes())}${pad(d.getSeconds())}${ampm}`;
+            const base = sourceFileName ? sourceFileName.replace(/\.logo$/i, '') : 'logo-graphics';
+            return `${base}-${ts}.png`;
+        }
 
         function clearCanvas() {
             ctx.fillStyle = 'white';
@@ -505,7 +521,7 @@
         document.getElementById('save-menu').addEventListener('click', () => {
             const dataURL = canvas.toDataURL('image/png');
             const link = document.createElement('a');
-            link.download = `logo-graphics-${Date.now()}.png`;
+            link.download = defaultPngName();
             link.href = dataURL;
             link.click();
             contextMenu.style.display = 'none';

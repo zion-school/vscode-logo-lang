@@ -79,7 +79,9 @@ export function activate(context: vscode.ExtensionContext) {
   const showGraphicsCommand = vscode.commands.registerCommand(
     'logo.showGraphics',
     () => {
-      showGraphicsPanel(context);
+      const activeDoc = vscode.window.activeTextEditor?.document;
+      const fileName = activeDoc?.languageId === 'logo' ? activeDoc.fileName : undefined;
+      showGraphicsPanel(context, fileName);
     }
   );
 
@@ -127,7 +129,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         await runtime.execute();
 
-        showGraphicsPanel(context);
+        showGraphicsPanel(context, document.fileName);
         updateGraphics(runtime.getDrawCommands());
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -175,7 +177,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Auto-show graphics panel when debugging starts and clear previous output
   vscode.debug.onDidStartDebugSession((session) => {
     if (session.type === 'logo') {
-      showGraphicsPanel(context);
+      showGraphicsPanel(context, session.configuration?.program);
       const outputChannel = getLogoOutputChannel();
       outputChannel.clear();
     }
@@ -222,13 +224,18 @@ async function resolveLogoDocument(resource?: vscode.Uri): Promise<vscode.TextDo
   return undefined;
 }
 
-function showGraphicsPanel(context: vscode.ExtensionContext) {
+function showGraphicsPanel(context: vscode.ExtensionContext, sourceFilePath?: string) {
+  const baseName = sourceFilePath ? path.basename(sourceFilePath) : undefined;
+  const title = baseName ?? 'Logo Graphics';
+
   if (graphicsPanel) {
+    graphicsPanel.title = title;
+    graphicsPanel.webview.postMessage({ command: 'setSourceFile', fileName: baseName });
     graphicsPanel.reveal(vscode.ViewColumn.Two, true);
   } else {
     graphicsPanel = vscode.window.createWebviewPanel(
       'logoGraphics',
-      'Logo Graphics',
+      title,
       {
         viewColumn: vscode.ViewColumn.Two,
         preserveFocus: true
@@ -239,7 +246,7 @@ function showGraphicsPanel(context: vscode.ExtensionContext) {
       }
     );
 
-    graphicsPanel.webview.html = getWebviewContent(context);
+    graphicsPanel.webview.html = getWebviewContent(context, baseName);
     wireCanvasSizePersistence(graphicsPanel.webview, context);
 
     graphicsPanel.onDidDispose(() => {
@@ -257,7 +264,7 @@ function updateGraphics(commands: DrawCommand[]) {
   }
 }
 
-function getWebviewContent(context: vscode.ExtensionContext): string {
+function getWebviewContent(context: vscode.ExtensionContext, sourceFile?: string): string {
   const htmlPath = path.join(context.extensionPath, 'webview', 'graphics.html');
   let html = fs.readFileSync(htmlPath, 'utf8');
 
@@ -266,7 +273,8 @@ function getWebviewContent(context: vscode.ExtensionContext): string {
   html = html.replace('<meta charset="UTF-8">', `<meta charset="UTF-8">\n    ${cspMeta}`);
 
   const size = context.globalState.get('logo.canvasSize', { w: 500, h: 500 });
-  html = html.replace('</head>', `<script>window.__LOGO_CANVAS_SIZE__=${JSON.stringify(size)};</script></head>`);
+  const sourceJs = sourceFile ? `window.__LOGO_SOURCE_FILE__=${JSON.stringify(sourceFile)};` : '';
+  html = html.replace('</head>', `<script>window.__LOGO_CANVAS_SIZE__=${JSON.stringify(size)};${sourceJs}</script></head>`);
 
   return html;
 }
@@ -295,7 +303,7 @@ function showPreviewPanel(context: vscode.ExtensionContext, document: vscode.Tex
       }
     );
 
-    previewPanel.webview.html = getWebviewContent(context);
+    previewPanel.webview.html = getWebviewContent(context, path.basename(document.fileName));
     wireCanvasSizePersistence(previewPanel.webview, context);
 
     previewPanel.onDidDispose(() => {
