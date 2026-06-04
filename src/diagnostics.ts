@@ -368,6 +368,33 @@ export function analyzeSource(source: string, currentFilePath?: string): Diagnos
         }
       }
 
+      if (up === 'IF') {
+        if (!arg) {
+          push(li, tokenStart, token.length, 'error', 'IF expects a condition');
+        } else if (arg.trim().startsWith('[')) {
+          push(li, tokenStart, token.length, 'error', 'IF expects a condition');
+        } else {
+          const block = findNextBlock(li, tokenStart + token.length);
+          if (!block) {
+            push(li, tokenStart, token.length, 'error', 'IF expects a block');
+          }
+        }
+      }
+
+      if (up === 'SETPOS') {
+        if (!arg) {
+          push(li, tokenStart, token.length, 'error', "SETPOS expects '[x y]'");
+        } else if (!arg.trim().startsWith('[')) {
+          push(li, tokenStart, token.length, 'error', "SETPOS expects '[x y]'");
+        }
+      }
+
+      if (up === 'SETH' || up === 'SETHEADING') {
+        if (!arg) {
+          push(li, tokenStart, token.length, 'error', `${token.toUpperCase()} expects 1 argument`);
+        }
+      }
+
       if (up === 'IFELSE') {
         if (!arg) {
           push(li, tokenStart, token.length, 'error', 'IFELSE expects a condition');
