@@ -194,10 +194,22 @@ export function evalExpression(
 ): { value: number; end: number } {
   let { value: left, end: i } = evalTerm(tokens, start, vars);
   while (i < tokens.length) {
-    const op = tokens[i].value;
-    if (op !== '+' && op !== '-') break;
+    const op = tokens[i];
+    if (op.value !== '+' && op.value !== '-') break;
+    // A '+'/'-' with whitespace before and no space after is a unary prefix
+    // on the next argument, not a binary operator. So "PROC -30 -45" yields
+    // two args, but ":SIZE - 1" stays binary.
+    if (i > 0 && i + 1 < tokens.length) {
+      const prev = tokens[i - 1];
+      const next = tokens[i + 1];
+      const spaceBefore = prev.line !== op.line ||
+        op.column > prev.column + prev.value.length;
+      const adjacentAfter = next.line === op.line &&
+        next.column === op.column + 1;
+      if (spaceBefore && adjacentAfter) break;
+    }
     const { value: right, end: j } = evalTerm(tokens, i + 1, vars);
-    left = op === '+' ? left + right : left - right;
+    left = op.value === '+' ? left + right : left - right;
     i = j;
   }
   return { value: left, end: i };

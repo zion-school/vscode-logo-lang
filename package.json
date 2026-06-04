@@ -166,6 +166,7 @@
     "test:procedure-debug": "npm run compile && node out/tests/procedureDebug.test.js",
     "test:if-debug": "npm run compile && node out/tests/ifDebug.test.js",
     "test:load-debug": "npm run compile && node out/tests/loadDebug.test.js",
+    "test:negative-args": "npm run compile && node out/tests/negativeArgs.test.js",
     "lint": "eslint src --ext ts",
     "generate-svg": "npm run compile && node out/generateSVG.js"
   },
