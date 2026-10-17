@@ -526,7 +526,7 @@ export class LogoRuntime implements VariableLookup {
     const t = this.executionTokens[this.executionIndex];
     if (!t) throw new Error('SETPENCOLOR expects 1 argument');
     if (t.value.startsWith('"')) {
-      this.turtle.penColor = t.value.slice(1);
+      this.turtle.penColor = t.value.slice(1,-1);
       this.executionIndex++;
       return;
     }
